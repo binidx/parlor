@@ -1,6 +1,27 @@
 #!/bin/zsh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/src"
+
+# Source .env from project root so .env values override script defaults.
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *=* ]]; then
+      key="${line%%=*}"
+      val="${line#*=}"
+      val="${val%\"}"
+      val="${val#\"}"
+      val="${val%\'}"
+      val="${val#\'}"
+      export "$key=$val"
+    fi
+  done < "$SCRIPT_DIR/.env"
+fi
+
 # Edit this path when you want to switch models.
 MODEL_PATH="${MODEL_PATH:-$HOME/models/llm/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking-mxfp8-mlx}"
 # Optional: point this at a local Kokoro model directory to avoid downloading TTS assets.
@@ -13,8 +34,6 @@ DISABLE_TTS="${DISABLE_TTS:-}"
 PORT="${PORT:-}"
 DEFAULT_PORT=9091
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/src"
 DEFAULT_KOKORO_DIR="$SCRIPT_DIR/models/Kokoro-82M-bf16"
 DEFAULT_TTS_DIR="$HOME/models/tts"
 

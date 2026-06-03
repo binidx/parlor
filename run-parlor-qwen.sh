@@ -1,6 +1,27 @@
 #!/bin/zsh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/src"
+
+# Source .env from project root so .env values override script defaults.
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *=* ]]; then
+      key="${line%%=*}"
+      val="${line#*=}"
+      val="${val%\"}"
+      val="${val#\"}"
+      val="${val%\'}"
+      val="${val#\'}"
+      export "$key=$val"
+    fi
+  done < "$SCRIPT_DIR/.env"
+fi
+
 MODEL_PATH="${MODEL_PATH:-$HOME/models/llm/Qwen3.6-A3B-opus-mxfp4-h}"
 PORT="${PORT:-9091}"
 
@@ -13,8 +34,6 @@ QWEN_TTS_LANGUAGE="${QWEN_TTS_LANGUAGE:-chinese}"
 QWEN_TTS_SPEAKER="${QWEN_TTS_SPEAKER:-serena}"
 QWEN_TTS_INSTRUCT="${QWEN_TTS_INSTRUCT:-自然、清晰、亲切，适合中文日常对话。}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/src"
 DEFAULT_ASR_DIR="$HOME/models/asr/Qwen3-ASR-0.6B"
 DEFAULT_ASR_DIR_MLX="$HOME/models/asr/Qwen3-ASR-0.6B-MLX-4bit"
 DEFAULT_ASR_DIR_MLX_17="$HOME/models/asr/Qwen3-ASR-1.7B-MLX-8bit"

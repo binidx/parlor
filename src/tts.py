@@ -15,6 +15,19 @@ def _is_apple_silicon() -> bool:
     return sys.platform == "darwin" and platform.machine() == "arm64"
 
 
+def _auto_detect_qwen_tts_model() -> str:
+    """Find a local Qwen3-TTS model directory, or return empty string."""
+    home = Path.home()
+    candidates = [
+        home / "models" / "tts" / "Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit",
+        home / "models" / "tts" / "Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit",
+    ]
+    for d in candidates:
+        if d.is_dir() and (d / "speech_tokenizer" / "config.json").exists() and (d / "speech_tokenizer" / "model.safetensors").exists():
+            return str(d)
+    return ""
+
+
 class TTSBackend:
     """Unified TTS interface."""
 
@@ -132,7 +145,11 @@ class QwenTTSBackend(TTSBackend):
 
         model_ref = os.environ.get("TTS_MODEL_PATH", "").strip()
         if not model_ref:
-            raise RuntimeError("TTS_MODEL_PATH is not set for Qwen TTS.")
+            model_ref = _auto_detect_qwen_tts_model()
+            if not model_ref:
+                raise RuntimeError("TTS_MODEL_PATH is not set and no local Qwen3-TTS model found.")
+            os.environ["TTS_MODEL_PATH"] = model_ref
+            print(f"TTS: auto-detected model at {model_ref}")
 
         self._model = load_model(os.path.expanduser(model_ref))
         self.sample_rate = self._model.sample_rate
@@ -196,6 +213,12 @@ def load() -> TTSBackend:
         return backend
 
     tts_model_path = os.environ.get("TTS_MODEL_PATH", "").strip()
+    if not tts_model_path:
+        detected = _auto_detect_qwen_tts_model()
+        if detected:
+            tts_model_path = detected
+            os.environ["TTS_MODEL_PATH"] = detected
+
     if tts_model_path and _read_model_type(tts_model_path) == "qwen3_tts":
         try:
             backend = QwenTTSBackend()

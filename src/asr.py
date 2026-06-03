@@ -1,6 +1,23 @@
 """Speech-to-text backends."""
 
 import os
+from pathlib import Path
+
+
+def _auto_detect_asr_model() -> str:
+    """Find a local Qwen3-ASR model directory, or fall back to HuggingFace."""
+    home = Path.home()
+    candidates = [
+        home / "models" / "asr" / "Qwen3-ASR-0.6B-4bit",
+        home / "models" / "asr" / "Qwen3-ASR-0.6B-8bit",
+        home / "models" / "asr" / "Qwen3-ASR-0.6B-MLX-4bit",
+        home / "models" / "asr" / "Qwen3-ASR-1.7B-MLX-8bit",
+        home / "models" / "asr" / "Qwen3-ASR-0.6B",
+    ]
+    for d in candidates:
+        if d.is_dir() and (d / "preprocessor_config.json").exists():
+            return str(d)
+    return "Qwen/Qwen3-ASR-0.6B"
 
 
 class ASRBackend:
@@ -18,9 +35,9 @@ class QwenASRBackend(ASRBackend):
 
         model_ref = os.environ.get("ASR_MODEL_PATH", "").strip()
         if not model_ref:
-            raise RuntimeError(
-                "ASR_MODEL_PATH is not set. Point it at a local Qwen3-ASR model or HF repo id."
-            )
+            model_ref = _auto_detect_asr_model()
+            os.environ["ASR_MODEL_PATH"] = model_ref
+            print(f"ASR: auto-detected model at {model_ref}")
 
         self._model = load_stt_model(os.path.expanduser(model_ref))
         self._language = os.environ.get("ASR_LANGUAGE", "chinese").strip() or "chinese"
