@@ -13,7 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import uvicorn
@@ -367,6 +367,27 @@ class InferenceResult:
         self.aborted = aborted
 
 
+@runtime_checkable
+class Runtime(Protocol):
+    backend_name: str
+    display_name: str
+    model_path: str
+    supports_streaming: bool
+
+    def load(self) -> None: ...
+    def close(self) -> None: ...
+    def create_session(self) -> dict[str, Any]: ...
+    def close_session(self, session: dict[str, Any]) -> None: ...
+    def update_system_prompt(self, session: dict[str, Any], prompt: str) -> None: ...
+    def infer(
+        self,
+        session: dict[str, Any],
+        msg: dict[str, Any],
+        interrupted: asyncio.Event,
+        on_sentence: Callable[[str], None] | None = None,
+    ) -> InferenceResult: ...
+
+
 def make_unsupported_video_processor(
     base_cls: type,
     merge_size: int = 2,
@@ -393,6 +414,7 @@ def make_unsupported_video_processor(
 
 class LiteRTRuntime:
     backend_name = "LiteRT-LM"
+    supports_streaming = False
 
     def __init__(self, model_path: str):
         self.model_path = model_path
@@ -461,6 +483,7 @@ class LiteRTRuntime:
         session: dict[str, Any],
         msg: dict[str, Any],
         interrupted: asyncio.Event,
+        on_sentence: Callable[[str], None] | None = None,
     ) -> InferenceResult:
         # LiteRT only supports single image — collapse multi-image to latest frame
         lite_msg = dict(msg)
@@ -493,6 +516,7 @@ class LiteRTRuntime:
 
 class MlxRuntime:
     backend_name = "MLX"
+    supports_streaming = True
 
     def __init__(self, model_path: str):
         self.model_path = model_path
@@ -694,7 +718,7 @@ class MlxRuntime:
         return InferenceResult(transcription, text_response, llm_time)
 
 
-def build_runtime(model_path: str) -> LiteRTRuntime | MlxRuntime:
+def build_runtime(model_path: str) -> Runtime:
     path = Path(model_path)
     if path.is_dir():
         config_path = path / "config.json"
@@ -737,7 +761,7 @@ async def root():
 
 @app.get("/config")
 async def config():
-    default_prompt = MLX_SYSTEM_PROMPT if isinstance(runtime, MlxRuntime) else LITERT_SYSTEM_PROMPT
+    default_prompt = MLX_SYSTEM_PROMPT if runtime.supports_streaming else LITERT_SYSTEM_PROMPT
     return JSONResponse(
         {
             "model_label": runtime.display_name,
@@ -748,6 +772,110 @@ async def config():
     )
 
 
+class BatchTTSHandler:
+    """Generate TTS for all sentences sequentially (non-streaming path)."""
+
+    def __init__(self, ws: WebSocket, tts_backend: Any, interrupted: asyncio.Event):
+        self._ws = ws
+        self._tts = tts_backend
+        self._interrupted = interrupted
+
+    async def run(self, sentences: list[str]) -> float:
+        tts_start = time.time()
+        await self._ws.send_text(json.dumps({
+            "type": "audio_start",
+            "sample_rate": self._tts.sample_rate,
+            "sentence_count": len(sentences),
+        }))
+        for i, sentence in enumerate(sentences):
+            if self._interrupted.is_set():
+                print(f"Interrupted during TTS (sentence {i + 1}/{len(sentences)})")
+                break
+            pcm = await asyncio.get_event_loop().run_in_executor(
+                None, lambda s=sentence: self._tts.generate(s)
+            )
+            if self._interrupted.is_set():
+                break
+            await self._send_chunk(pcm, i)
+        tts_time = time.time() - tts_start
+        if not self._interrupted.is_set():
+            await self._ws.send_text(json.dumps({"type": "audio_end", "tts_time": round(tts_time, 2)}))
+        return tts_time
+
+    async def _send_chunk(self, pcm: Any, index: int) -> None:
+        pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
+        await self._ws.send_text(json.dumps({
+            "type": "audio_chunk",
+            "audio": base64.b64encode(pcm_int16.tobytes()).decode(),
+            "index": index,
+        }))
+
+
+class StreamingTTSHandler:
+    """Generate TTS incrementally as sentences arrive from the LLM."""
+
+    def __init__(self, ws: WebSocket, tts_backend: Any, interrupted: asyncio.Event):
+        self._ws = ws
+        self._tts = tts_backend
+        self._interrupted = interrupted
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._audio_started = False
+        self._tts_start = 0.0
+        self._sentence_idx = 0
+
+    @property
+    def queue(self) -> asyncio.Queue[str | None]:
+        return self._queue
+
+    def make_callback(self, loop: asyncio.AbstractEventLoop) -> Callable[[str], None]:
+        def on_sentence(sentence: str) -> None:
+            loop.call_soon_threadsafe(self._queue.put_nowait, sentence)
+        return on_sentence
+
+    async def worker(self) -> None:
+        while True:
+            sentence = await self._queue.get()
+            if sentence is None:
+                break
+            if self._interrupted.is_set():
+                continue
+            if not self._audio_started:
+                self._tts_start = time.time()
+                await self._ws.send_text(json.dumps({
+                    "type": "audio_start",
+                    "sample_rate": self._tts.sample_rate,
+                }))
+                self._audio_started = True
+            pcm = await asyncio.get_event_loop().run_in_executor(
+                None, lambda s=sentence: self._tts.generate(s)
+            )
+            if self._interrupted.is_set():
+                continue
+            pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
+            await self._ws.send_text(json.dumps({
+                "type": "audio_chunk",
+                "audio": base64.b64encode(pcm_int16.tobytes()).decode(),
+                "index": self._sentence_idx,
+            }))
+            self._sentence_idx += 1
+
+    async def finish(self) -> None:
+        await asyncio.sleep(0)
+        await self._queue.put(None)
+
+    @property
+    def audio_started(self) -> bool:
+        return self._audio_started
+
+    @property
+    def tts_time(self) -> float:
+        return time.time() - self._tts_start
+
+    @property
+    def sentence_count(self) -> int:
+        return self._sentence_idx
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -755,21 +883,21 @@ async def websocket_endpoint(ws: WebSocket):
     session = runtime.create_session()
     interrupted = asyncio.Event()
     msg_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    active_sentence_queue: asyncio.Queue[str | None] | None = None
+    tts_handler: StreamingTTSHandler | None = None
 
     async def receiver():
-        """Receive messages from WebSocket and route them."""
-        nonlocal active_sentence_queue
+        nonlocal tts_handler
         try:
             while True:
                 raw = await ws.receive_text()
                 msg = json.loads(raw)
                 if msg.get("type") == "interrupt":
                     interrupted.set()
-                    if active_sentence_queue is not None:
-                        while not active_sentence_queue.empty():
+                    if tts_handler is not None:
+                        q = tts_handler.queue
+                        while not q.empty():
                             try:
-                                active_sentence_queue.get_nowait()
+                                q.get_nowait()
                             except asyncio.QueueEmpty:
                                 break
                     print("Client interrupted")
@@ -789,6 +917,7 @@ async def websocket_endpoint(ws: WebSocket):
             interrupted.clear()
             transcription = None
             runtime_msg = dict(msg)
+            tts_handler = None
 
             if msg.get("system_prompt"):
                 runtime.update_system_prompt(session, msg["system_prompt"])
@@ -806,106 +935,32 @@ async def websocket_endpoint(ws: WebSocket):
                 runtime_msg["text"] = transcription
 
             tts_enabled = msg.get("tts", True)
-            use_streaming_tts = (
-                isinstance(runtime, MlxRuntime)
+            use_streaming = (
+                runtime.supports_streaming
                 and tts_enabled
                 and tts_backend is not None
             )
 
-            if use_streaming_tts:
-                sentence_queue: asyncio.Queue[str | None] = asyncio.Queue()
-                active_sentence_queue = sentence_queue
-                audio_started = False
-                tts_start = 0.0
-                sentence_idx = 0
+            if use_streaming:
+                tts_handler = StreamingTTSHandler(ws, tts_backend, interrupted)
+                worker_task = asyncio.create_task(tts_handler.worker())
                 loop = asyncio.get_event_loop()
-
-                def on_sentence_cb(sentence: str) -> None:
-                    loop.call_soon_threadsafe(sentence_queue.put_nowait, sentence)
-
-                async def tts_worker() -> None:
-                    nonlocal audio_started, tts_start, sentence_idx
-                    while True:
-                        sentence = await sentence_queue.get()
-                        if sentence is None:
-                            break
-                        if interrupted.is_set():
-                            continue
-                        if not audio_started:
-                            tts_start = time.time()
-                            await ws.send_text(
-                                json.dumps(
-                                    {
-                                        "type": "audio_start",
-                                        "sample_rate": tts_backend.sample_rate,
-                                    }
-                                )
-                            )
-                            audio_started = True
-                        pcm = await loop.run_in_executor(
-                            None, lambda s=sentence: tts_backend.generate(s)
-                        )
-                        if interrupted.is_set():
-                            continue
-                        pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
-                        await ws.send_text(
-                            json.dumps(
-                                {
-                                    "type": "audio_chunk",
-                                    "audio": base64.b64encode(pcm_int16.tobytes()).decode(),
-                                    "index": sentence_idx,
-                                }
-                            )
-                        )
-                        sentence_idx += 1
-
-                worker_task = asyncio.create_task(tts_worker())
-
                 try:
                     result = await loop.run_in_executor(
                         None,
                         lambda: runtime.infer(
-                            session, runtime_msg, interrupted, on_sentence=on_sentence_cb
+                            session, runtime_msg, interrupted,
+                            on_sentence=tts_handler.make_callback(loop),
                         ),
                     )
                 except (ValueError, binascii.Error) as exc:
-                    await sentence_queue.put(None)
+                    await tts_handler.finish()
                     await worker_task
-                    active_sentence_queue = None
+                    tts_handler = None
                     await ws.send_text(json.dumps({"type": "error", "text": str(exc)}))
                     continue
-
-                # Yield to process any pending call_soon_threadsafe callbacks
-                await asyncio.sleep(0)
-                await sentence_queue.put(None)
+                await tts_handler.finish()
                 await worker_task
-                active_sentence_queue = None
-
-                if transcription:
-                    result.transcription = transcription
-
-                if result.aborted or interrupted.is_set():
-                    print("Interrupted after LLM, skipping response")
-                    if audio_started:
-                        await ws.send_text(json.dumps({"type": "audio_end", "tts_time": 0}))
-                    continue
-
-                reply = {
-                    "type": "text",
-                    "text": result.response,
-                    "llm_time": round(result.elapsed, 2),
-                }
-                if result.transcription:
-                    reply["transcription"] = result.transcription
-                await ws.send_text(json.dumps(reply))
-
-                if audio_started:
-                    tts_time = time.time() - tts_start
-                    print(f"TTS ({tts_time:.2f}s): {sentence_idx} sentences (streaming)")
-                    if not interrupted.is_set():
-                        await ws.send_text(
-                            json.dumps({"type": "audio_end", "tts_time": round(tts_time, 2)})
-                        )
             else:
                 try:
                     result = await asyncio.get_event_loop().run_in_executor(
@@ -915,66 +970,31 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_text(json.dumps({"type": "error", "text": str(exc)}))
                     continue
 
-                if transcription:
-                    result.transcription = transcription
+            if transcription:
+                result.transcription = transcription
 
-                if result.aborted or interrupted.is_set():
-                    print("Interrupted after LLM, skipping response")
-                    continue
+            if result.aborted or interrupted.is_set():
+                print("Interrupted after LLM, skipping response")
+                if use_streaming and tts_handler and tts_handler.audio_started:
+                    await ws.send_text(json.dumps({"type": "audio_end", "tts_time": 0}))
+                continue
 
-                reply = {"type": "text", "text": result.response, "llm_time": round(result.elapsed, 2)}
-                if result.transcription:
-                    reply["transcription"] = result.transcription
-                await ws.send_text(json.dumps(reply))
+            reply = {"type": "text", "text": result.response, "llm_time": round(result.elapsed, 2)}
+            if result.transcription:
+                reply["transcription"] = result.transcription
+            await ws.send_text(json.dumps(reply))
 
-                if interrupted.is_set() or not tts_enabled:
-                    print("Interrupted before TTS, skipping audio")
-                    continue
-
-                sentences = split_sentences(result.response)
-                if not sentences:
-                    sentences = [result.response]
-
-                tts_start = time.time()
-
-                await ws.send_text(
-                    json.dumps(
-                        {
-                            "type": "audio_start",
-                            "sample_rate": tts_backend.sample_rate,
-                            "sentence_count": len(sentences),
-                        }
-                    )
-                )
-
-                for i, sentence in enumerate(sentences):
-                    if interrupted.is_set():
-                        print(f"Interrupted during TTS (sentence {i + 1}/{len(sentences)})")
-                        break
-
-                    pcm = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda s=sentence: tts_backend.generate(s)
-                    )
-
-                    if interrupted.is_set():
-                        break
-
-                    pcm_int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
-                    await ws.send_text(
-                        json.dumps(
-                            {
-                                "type": "audio_chunk",
-                                "audio": base64.b64encode(pcm_int16.tobytes()).decode(),
-                                "index": i,
-                            }
-                        )
-                    )
-
-                tts_time = time.time() - tts_start
+            if not use_streaming and tts_enabled and tts_backend is not None:
+                sentences = split_sentences(result.response) or [result.response]
+                batch = BatchTTSHandler(ws, tts_backend, interrupted)
+                tts_time = await batch.run(sentences)
                 print(f"TTS ({tts_time:.2f}s): {len(sentences)} sentences")
-
+            elif use_streaming and tts_handler and tts_handler.audio_started:
                 if not interrupted.is_set():
-                    await ws.send_text(json.dumps({"type": "audio_end", "tts_time": round(tts_time, 2)}))
+                    await ws.send_text(
+                        json.dumps({"type": "audio_end", "tts_time": round(tts_handler.tts_time, 2)})
+                    )
+                print(f"TTS ({tts_handler.tts_time:.2f}s): {tts_handler.sentence_count} sentences (streaming)")
 
     except WebSocketDisconnect:
         print("Client disconnected")
