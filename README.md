@@ -60,12 +60,55 @@ Open [http://localhost:8000](http://localhost:8000), grant camera and microphone
 
 Models are downloaded automatically on first run (~2.6 GB for Gemma 4 E2B, plus TTS models).
 
+On macOS, you can also point `MODEL_PATH` at a local MLX Gemma 4 model directory
+(`config.json` + `*.safetensors`) and Parlor will use `mlx-vlm` instead of LiteRT-LM.
+
 ## Configuration
 
 | Variable     | Default                        | Description                                    |
 | ------------ | ------------------------------ | ---------------------------------------------- |
-| `MODEL_PATH` | auto-download from HuggingFace | Path to a local `gemma-4-E2B-it.litertlm` file |
+| `MODEL_PATH` | auto-download from HuggingFace | Path to a local `.litertlm` file or MLX model directory |
 | `PORT`       | `8000`                         | Server port                                    |
+
+Examples:
+
+```bash
+# Default LiteRT-LM download (Gemma 4 E2B)
+uv run server.py
+
+# Local MLX Gemma 4 E4B directory on macOS
+MODEL_PATH=~/models/llm/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking-mxfp8-mlx uv run server.py
+```
+
+For local TTS on macOS, Parlor will automatically look for:
+
+- `~/models/tts/Kokoro-82M-bf16/` as an MLX Kokoro directory
+- `~/models/tts/kokoro-v1.0.onnx` and `~/models/tts/voices-v1.0.bin` as ONNX Kokoro files
+
+You can also override them explicitly with `KOKORO_MODEL_PATH` or
+`KOKORO_ONNX_MODEL_PATH` + `KOKORO_ONNX_VOICES_PATH`.
+
+## Qwen Stack
+
+For a Chinese-oriented stack with separate ASR + LLM + TTS, use:
+
+```bash
+./run-parlor-qwen.sh
+```
+
+Default expectations:
+
+- LLM: `~/models/llm/Qwen3.6-A3B-opus-mxfp4-h`
+- ASR: `~/models/asr/Qwen3-ASR-0.6B` or falls back to `Qwen/Qwen3-ASR-0.6B`
+- TTS: `~/models/tts/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit`
+
+Key env vars:
+
+- `ASR_MODEL_PATH`
+- `ASR_LANGUAGE` (default: `chinese`)
+- `TTS_MODEL_PATH`
+- `QWEN_TTS_SPEAKER` (default: `serena`)
+- `QWEN_TTS_INSTRUCT`
 
 ## Performance (Apple M3 Pro)
 

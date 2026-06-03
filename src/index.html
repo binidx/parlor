@@ -358,8 +358,32 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
     flex-shrink: 0;
     z-index: 2;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .length-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .length-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c-text-dim);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .ctrl-btn {
@@ -381,6 +405,11 @@
     background: var(--c-listen-dim);
     color: var(--c-listen);
     border-color: rgba(74,222,128,0.15);
+  }
+
+  .ctrl-btn.compact {
+    padding: 7px 12px;
+    font-size: 11px;
   }
 
   .state-indicator {
@@ -411,6 +440,40 @@
     50% { opacity: 0.4; transform: scale(0.8); }
   }
 
+  .composer {
+    width: 100%;
+    max-width: 640px;
+    padding: 10px 4px 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .composer textarea {
+    flex: 1;
+    min-height: 44px;
+    max-height: 120px;
+    resize: vertical;
+    padding: 11px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: var(--c-surface);
+    color: var(--c-text-bright);
+    font: inherit;
+    line-height: 1.45;
+    outline: none;
+  }
+
+  .composer textarea::placeholder {
+    color: var(--c-text-dim);
+  }
+
+  .composer textarea:focus {
+    border-color: rgba(74,222,128,0.25);
+    box-shadow: 0 0 0 3px rgba(74,222,128,0.08);
+  }
+
 </style>
 </head>
 <body>
@@ -420,7 +483,7 @@
     <div class="logo-mark"></div>
     <h1>Parlor</h1>
   </div>
-  <span class="model-label">Gemma 4 E2B</span>
+  <span id="modelLabel" class="model-label">Loading model...</span>
   <div id="status" class="status-pill disconnected">Disconnected</div>
 </header>
 
@@ -441,7 +504,16 @@
 
   <!-- Controls -->
   <div class="controls">
-    <button id="cameraToggle" class="ctrl-btn active">Camera On</button>
+    <div class="control-group">
+      <button id="cameraToggle" class="ctrl-btn">Enable Camera/Mic</button>
+      <button id="speakerToggle" class="ctrl-btn active">Speaker On</button>
+    </div>
+    <div class="length-group">
+      <span class="length-label">Reply</span>
+      <button id="lengthShort" class="ctrl-btn compact">Short</button>
+      <button id="lengthMedium" class="ctrl-btn compact active">Medium</button>
+      <button id="lengthLong" class="ctrl-btn compact">Long</button>
+    </div>
     <div class="state-indicator">
       <div id="stateDot" class="dot loading"></div>
       <span id="stateText">Loading...</span>
@@ -451,6 +523,11 @@
       On-device
     </span>
   </div>
+
+  <div class="composer">
+    <textarea id="textInput" placeholder="Type a message. If camera is on, the current frame will be sent too."></textarea>
+    <button id="sendButton" class="ctrl-btn active">Send</button>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
@@ -458,6 +535,13 @@
 <script>
 const $ = id => document.getElementById(id);
 const video = $('video'), cameraToggle = $('cameraToggle');
+const speakerToggle = $('speakerToggle');
+const lengthShort = $('lengthShort');
+const lengthMedium = $('lengthMedium');
+const lengthLong = $('lengthLong');
+const textInput = $('textInput');
+const sendButton = $('sendButton');
+const modelLabel = $('modelLabel');
 const messagesDiv = $('messages'), statusEl = $('status');
 const stateDot = $('stateDot'), stateText = $('stateText');
 const viewportWrap = $('viewportWrap');
@@ -469,12 +553,16 @@ let cameraEnabled = true;
 let audioCtx, currentSource;
 let state = 'loading';
 let ignoreIncomingAudio = false;
+let speakerEnabled = true;
+let responseLength = 'medium';
 
 // Streaming audio playback state
 let streamSampleRate = 24000;
 let streamNextTime = 0;         // When to schedule next chunk
 let streamSources = [];         // Active AudioBufferSourceNodes
 let streamTtsTime = null;
+let vadReady = false;
+let mediaReady = false;
 
 // ── Waveform Visualizer ──
 let analyser, micSource;
@@ -622,7 +710,11 @@ function connect() {
   };
   ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
-    if (msg.type === 'text') {
+    if (msg.type === 'error') {
+      addMessage('system', msg.text);
+      setStatus('connected', 'Connected');
+      setState('listening');
+    } else if (msg.type === 'text') {
       if (msg.transcription) {
         const userMsgs = messagesDiv.querySelectorAll('.msg.user');
         const lastUserMsg = userMsgs[userMsgs.length - 1];
@@ -632,15 +724,19 @@ function connect() {
         }
       }
       addMessage('assistant', msg.text, `LLM ${msg.llm_time}s`);
+      if (!speakerEnabled) {
+        setStatus('connected', 'Connected');
+        setState('listening');
+      }
     } else if (msg.type === 'audio_start') {
-      if (ignoreIncomingAudio) return;
+      if (ignoreIncomingAudio || !speakerEnabled) return;
       streamSampleRate = msg.sample_rate || 24000;
       startStreamPlayback();
     } else if (msg.type === 'audio_chunk') {
-      if (ignoreIncomingAudio) return;
+      if (ignoreIncomingAudio || !speakerEnabled) return;
       queueAudioChunk(msg.audio);
     } else if (msg.type === 'audio_end') {
-      if (ignoreIncomingAudio) {
+      if (ignoreIncomingAudio || !speakerEnabled) {
         ignoreIncomingAudio = false;
         stopPlayback();
         setState('listening');
@@ -655,16 +751,113 @@ function connect() {
 
 function setStatus(cls, text) { statusEl.className = `status-pill ${cls}`; statusEl.textContent = text; }
 
+function setCameraButton(enabled) {
+  cameraToggle.classList.toggle('active', enabled);
+  cameraToggle.textContent = enabled ? 'Camera On' : 'Camera Off';
+  video.style.opacity = enabled ? 1 : 0.3;
+}
+
+function setCameraPromptButton() {
+  cameraToggle.classList.remove('active');
+  cameraToggle.textContent = 'Enable Camera/Mic';
+  video.style.opacity = 1;
+}
+
+function setSpeakerButton(enabled) {
+  speakerToggle.classList.toggle('active', enabled);
+  speakerToggle.textContent = enabled ? 'Speaker On' : 'Speaker Off';
+}
+
+function setResponseLength(length) {
+  responseLength = length;
+  lengthShort.classList.toggle('active', length === 'short');
+  lengthMedium.classList.toggle('active', length === 'medium');
+  lengthLong.classList.toggle('active', length === 'long');
+}
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/config');
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (cfg.model_label) modelLabel.textContent = cfg.model_label;
+  } catch {}
+}
+
+function waitForVideoReady(el, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    if (el.readyState >= 2 && el.videoWidth > 0 && el.videoHeight > 0) {
+      resolve();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Camera preview timed out'));
+    }, timeoutMs);
+
+    const onReady = () => {
+      if (el.videoWidth > 0 && el.videoHeight > 0) {
+        cleanup();
+        resolve();
+      }
+    };
+
+    const onError = () => {
+      cleanup();
+      reject(new Error('Camera preview failed to start'));
+    };
+
+    function cleanup() {
+      clearTimeout(timer);
+      el.removeEventListener('loadedmetadata', onReady);
+      el.removeEventListener('canplay', onReady);
+      el.removeEventListener('playing', onReady);
+      el.removeEventListener('error', onError);
+    }
+
+    el.addEventListener('loadedmetadata', onReady);
+    el.addEventListener('canplay', onReady);
+    el.addEventListener('playing', onReady);
+    el.addEventListener('error', onError);
+  });
+}
+
+async function attachVideoStream(stream) {
+  video.srcObject = stream;
+  video.muted = true;
+  video.playsInline = true;
+  try {
+    await video.play();
+  } catch (e) {
+    console.warn('video.play() failed:', e.message);
+  }
+  await waitForVideoReady(video);
+}
+
+function describeMediaError(err) {
+  if (!err) return 'Unknown camera error';
+  const name = err.name || 'Error';
+  const message = err.message || '';
+  return message ? `${name}: ${message}` : name;
+}
+
 // ── Camera ──
 async function startCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('getUserMedia unavailable in this browser/context');
+  }
+
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       video: { width: 640, height: 480, facingMode: 'user' },
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    video.srcObject = mediaStream;
+    await attachVideoStream(mediaStream);
     return;
-  } catch (e) { console.warn('Video+audio failed:', e.message); }
+  } catch (e) {
+    console.warn('Video+audio failed:', describeMediaError(e));
+  }
 
   const streams = await Promise.allSettled([
     navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' } }),
@@ -672,12 +865,72 @@ async function startCamera() {
   ]);
   mediaStream = new MediaStream();
   streams.forEach(r => { if (r.status === 'fulfilled') r.value.getTracks().forEach(t => mediaStream.addTrack(t)); });
-  if (mediaStream.getVideoTracks().length) video.srcObject = mediaStream;
-  if (!mediaStream.getAudioTracks().length) { cameraEnabled = false; }
+  if (mediaStream.getVideoTracks().length) {
+    await attachVideoStream(mediaStream);
+  } else {
+    const videoErr = streams[0].status === 'rejected' ? describeMediaError(streams[0].reason) : 'No video track returned';
+    const audioErr = streams[1].status === 'rejected' ? describeMediaError(streams[1].reason) : null;
+    const contextHint =
+      location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'
+        ? ' Likely insecure context: use http://127.0.0.1:9091 or http://localhost:9091.'
+        : '';
+    throw new Error(`Camera unavailable. video=${videoErr}${audioErr ? `; audio=${audioErr}` : ''}.${contextHint}`);
+  }
+  if (!mediaStream.getAudioTracks().length) {
+    addMessage('system', 'Microphone unavailable. Camera preview is active, but voice input is disabled.');
+  }
+}
+
+async function initVad() {
+  if (!mediaStream || !mediaStream.getAudioTracks().length) return;
+  if (!window.vad || !window.vad.MicVAD) {
+    addMessage('system', 'VAD script failed to load. Camera preview is active, but voice input is unavailable.');
+    return;
+  }
+
+  myvad = await vad.MicVAD.new({
+    getStream: async () => new MediaStream(mediaStream.getAudioTracks()),
+    positiveSpeechThreshold: 0.5,
+    negativeSpeechThreshold: 0.25,
+    redemptionMs: 600,
+    minSpeechMs: 300,
+    preSpeechPadMs: 300,
+    onSpeechStart: handleSpeechStart,
+    onSpeechEnd: handleSpeechEnd,
+    onVADMisfire: () => { console.log('VAD misfire (too short)'); },
+    onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+    baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
+  });
+
+  myvad.start();
+  vadReady = true;
+  console.log('VAD initialized and listening');
+}
+
+async function requestMediaAccess() {
+  setState('loading');
+  stateText.textContent = 'Requesting Camera...';
+  try {
+    await startCamera();
+    mediaReady = true;
+    cameraEnabled = true;
+    setCameraButton(true);
+    if (!vadReady) {
+      await initVad();
+    }
+    setState('listening');
+  } catch (e) {
+    mediaReady = false;
+    cameraEnabled = false;
+    setCameraPromptButton();
+    addMessage('system', `Camera failed: ${e.message}`);
+    stateText.textContent = 'Grant Camera Access';
+    throw e;
+  }
 }
 
 function captureFrame() {
-  if (!cameraEnabled || !video.videoWidth) return null;
+  if (!cameraEnabled || !mediaReady || !video.videoWidth) return null;
   const canvas = document.createElement('canvas');
   const scale = 320 / video.videoWidth;
   canvas.width = 320; canvas.height = video.videoHeight * scale;
@@ -717,9 +970,29 @@ function handleSpeechEnd(audio) {
   setStatus('processing', 'Processing');
   addMessage('user', '<span class="loading-dots"><span></span><span></span><span></span></span>', imageBase64 ? 'with camera' : '');
 
-  const payload = { audio: wavBase64 };
+  const payload = { audio: wavBase64, tts: speakerEnabled, response_length: responseLength };
   if (imageBase64) payload.image = imageBase64;
   ws.send(JSON.stringify(payload));
+}
+
+function sendTextMessage() {
+  const text = textInput.value.trim();
+  if (!text) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    addMessage('system', 'WebSocket not connected yet.');
+    return;
+  }
+
+  const imageBase64 = captureFrame();
+  addMessage('user', text, imageBase64 ? 'typed · with camera' : 'typed');
+
+  setState('processing');
+  setStatus('processing', 'Processing');
+
+  const payload = { text, tts: speakerEnabled, response_length: responseLength };
+  if (imageBase64) payload.image = imageBase64;
+  ws.send(JSON.stringify(payload));
+  textInput.value = '';
 }
 
 // ── Float32 @ 16kHz → WAV base64 ──
@@ -818,11 +1091,42 @@ function addMessage(role, text, meta) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-cameraToggle.addEventListener('click', () => {
+cameraToggle.addEventListener('click', async () => {
+  if (!mediaReady) {
+    try {
+      await requestMediaAccess();
+    } catch (e) {
+      console.error('Media access failed:', e);
+    }
+    return;
+  }
+
   cameraEnabled = !cameraEnabled;
-  cameraToggle.classList.toggle('active', cameraEnabled);
-  cameraToggle.textContent = cameraEnabled ? 'Camera On' : 'Camera Off';
-  video.style.opacity = cameraEnabled ? 1 : 0.3;
+  setCameraButton(cameraEnabled);
+});
+
+speakerToggle.addEventListener('click', () => {
+  speakerEnabled = !speakerEnabled;
+  setSpeakerButton(speakerEnabled);
+  if (!speakerEnabled) {
+    stopPlayback();
+    if (state === 'speaking') {
+      setState('listening');
+      setStatus('connected', 'Connected');
+    }
+  }
+});
+
+lengthShort.addEventListener('click', () => setResponseLength('short'));
+lengthMedium.addEventListener('click', () => setResponseLength('medium'));
+lengthLong.addEventListener('click', () => setResponseLength('long'));
+
+sendButton.addEventListener('click', sendTextMessage);
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendTextMessage();
+  }
 });
 
 // ── Init ──
@@ -830,25 +1134,13 @@ async function init() {
   initWaveformCanvas();
   window.addEventListener('resize', initWaveformCanvas);
 
-  await startCamera();
+  await loadConfig();
   connect();
-
-  // Initialize VAD with shared mic stream
-  myvad = await vad.MicVAD.new({
-    getStream: async () => new MediaStream(mediaStream.getAudioTracks()),
-    positiveSpeechThreshold: 0.5,
-    negativeSpeechThreshold: 0.25,
-    redemptionMs: 600,
-    minSpeechMs: 300,
-    preSpeechPadMs: 300,
-    onSpeechStart: handleSpeechStart,
-    onSpeechEnd: handleSpeechEnd,
-    onVADMisfire: () => { console.log('VAD misfire (too short)'); },
-    onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
-    baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
-  });
-
-  myvad.start();
+  setState('loading');
+  stateText.textContent = 'Click Enable Camera/Mic';
+  setCameraPromptButton();
+  setSpeakerButton(true);
+  setResponseLength('medium');
 
   // Init audio context on first user gesture for mic visualizer
   // (browsers require user interaction to create AudioContext)
@@ -863,12 +1155,8 @@ async function init() {
   // Also try immediately (may work if page had prior interaction)
   ensureAudioCtx();
 
-  setState('listening');
-
   // Start waveform loop
   drawWaveform();
-
-  console.log('VAD initialized and listening');
 }
 
 init();
