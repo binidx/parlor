@@ -1,8 +1,8 @@
-# Parlor 能力与设计审查
+# Parlor Qwen 能力与设计审查
 
 ## 项目概述
 
-Parlor 是一个本地实时多模态 AI 语音+视觉助手。用户通过语音和摄像头与 AI 对话，AI 理解后用语音回复——全部在本地运行，无云端依赖。
+Parlor Qwen 基于 [Parlor](https://github.com/fikrikarim/parlor) 增强，是一个本地实时多模态 AI 语音+视觉助手。在原有 Gemma 4 + Kokoro 方案基础上引入 Qwen3 全家桶，针对中文场景深度优化。用户通过语音和摄像头与 AI 对话，AI 理解后用语音回复——全部在本地运行，无云端依赖。
 
 **技术栈：** FastAPI + WebSocket | Silero VAD (WASM) | LLM (LiteRT-LM / mlx-vlm) | ASR (Qwen3-ASR) | TTS (Kokoro / Qwen3-TTS)
 
