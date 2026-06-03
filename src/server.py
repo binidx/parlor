@@ -713,7 +713,7 @@ class MlxRuntime:
         if len(session["history"]) > MAX_HISTORY_TURNS + 1:
             excess = len(session["history"]) - (MAX_HISTORY_TURNS + 1)
             # Remove in pairs (user + assistant) starting after system prompt
-            excess = excess + (excess % 2)  # round up to even to keep pairs
+            # excess is always even (odd length - odd threshold)
             del session["history"][1 : 1 + excess]
         return InferenceResult(transcription, text_response, llm_time)
 
@@ -746,7 +746,7 @@ def load_models() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await asyncio.get_event_loop().run_in_executor(None, load_models)
+    await asyncio.get_running_loop().run_in_executor(None, load_models)
     yield
     runtime.close()
 
@@ -791,15 +791,14 @@ class BatchTTSHandler:
             if self._interrupted.is_set():
                 print(f"Interrupted during TTS (sentence {i + 1}/{len(sentences)})")
                 break
-            pcm = await asyncio.get_event_loop().run_in_executor(
+            pcm = await asyncio.get_running_loop().run_in_executor(
                 None, lambda s=sentence: self._tts.generate(s)
             )
             if self._interrupted.is_set():
                 break
             await self._send_chunk(pcm, i)
         tts_time = time.time() - tts_start
-        if not self._interrupted.is_set():
-            await self._ws.send_text(json.dumps({"type": "audio_end", "tts_time": round(tts_time, 2)}))
+        await self._ws.send_text(json.dumps({"type": "audio_end", "tts_time": round(tts_time, 2)}))
         return tts_time
 
     async def _send_chunk(self, pcm: Any, index: int) -> None:
@@ -846,7 +845,7 @@ class StreamingTTSHandler:
                     "sample_rate": self._tts.sample_rate,
                 }))
                 self._audio_started = True
-            pcm = await asyncio.get_event_loop().run_in_executor(
+            pcm = await asyncio.get_running_loop().run_in_executor(
                 None, lambda s=sentence: self._tts.generate(s)
             )
             if self._interrupted.is_set():
@@ -907,6 +906,7 @@ async def websocket_endpoint(ws: WebSocket):
             await msg_queue.put(None)
 
     recv_task = asyncio.create_task(receiver())
+    worker_task = None
 
     try:
         while True:
@@ -926,7 +926,7 @@ async def websocket_endpoint(ws: WebSocket):
             if msg.get("audio") and asr_backend is not None:
                 audio_path = write_temp_blob(msg["audio"], ".wav")
                 try:
-                    transcription = await asyncio.get_event_loop().run_in_executor(
+                    transcription = await asyncio.get_running_loop().run_in_executor(
                         None, lambda p=audio_path: asr_backend.transcribe(p)
                     )
                 finally:
@@ -944,7 +944,7 @@ async def websocket_endpoint(ws: WebSocket):
             if use_streaming:
                 tts_handler = StreamingTTSHandler(ws, tts_backend, interrupted)
                 worker_task = asyncio.create_task(tts_handler.worker())
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 try:
                     result = await loop.run_in_executor(
                         None,
@@ -953,7 +953,9 @@ async def websocket_endpoint(ws: WebSocket):
                             on_sentence=tts_handler.make_callback(loop),
                         ),
                     )
-                except (ValueError, binascii.Error) as exc:
+                except Exception as exc:
+                    if tts_handler.audio_started:
+                        await ws.send_text(json.dumps({"type": "audio_end", "tts_time": 0}))
                     await tts_handler.finish()
                     await worker_task
                     tts_handler = None
@@ -963,10 +965,10 @@ async def websocket_endpoint(ws: WebSocket):
                 await worker_task
             else:
                 try:
-                    result = await asyncio.get_event_loop().run_in_executor(
+                    result = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: runtime.infer(session, runtime_msg, interrupted)
                     )
-                except (ValueError, binascii.Error) as exc:
+                except Exception as exc:
                     await ws.send_text(json.dumps({"type": "error", "text": str(exc)}))
                     continue
 
@@ -999,6 +1001,12 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected")
     finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
         recv_task.cancel()
         try:
             await recv_task
