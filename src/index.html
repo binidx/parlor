@@ -67,12 +67,24 @@
   header {
     width: 100%;
     max-width: 720px;
-    padding: 20px 8px 0;
+    padding: 16px 8px 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
     z-index: 2;
     flex-shrink: 0;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .logo {
@@ -82,9 +94,9 @@
   }
 
   .logo-mark {
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
     background: linear-gradient(135deg, var(--glow) 0%, transparent 100%);
     opacity: 0.7;
     transition: background 0.4s ease, opacity 0.4s ease;
@@ -92,7 +104,7 @@
 
   .logo h1 {
     font-family: var(--font-body);
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 600;
     color: var(--c-text-bright);
     letter-spacing: 0.01em;
@@ -173,6 +185,13 @@
     aspect-ratio: 16/9;
     border-radius: 18px;
     flex-shrink: 0;
+  }
+
+  .viewport-wrap .state-indicator {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    z-index: 3;
   }
 
   /* Three glow layers */
@@ -350,54 +369,20 @@
     30% { opacity: 1; transform: translateY(-4px); }
   }
 
-  /* ── Controls bar ── */
-  .controls {
-    width: 100%;
-    max-width: 640px;
-    padding: 12px 4px 4px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    flex-wrap: wrap;
-    flex-shrink: 0;
-    z-index: 2;
-  }
-
-  .control-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .length-group {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .length-label {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--c-text-dim);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
+  /* ── Controls (compact, in header) ── */
   .ctrl-btn {
     font-family: var(--font-body);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    padding: 8px 16px;
+    padding: 6px 10px;
     border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 10px;
+    border-radius: 8px;
     background: var(--c-surface);
     color: var(--c-text-dim);
     cursor: pointer;
     transition: all 0.2s;
     letter-spacing: 0.02em;
+    white-space: nowrap;
   }
 
   .ctrl-btn:hover { background: var(--c-surface-hover); color: var(--c-text); }
@@ -408,18 +393,54 @@
   }
 
   .ctrl-btn.compact {
-    padding: 7px 12px;
-    font-size: 11px;
+    padding: 5px 8px;
+    font-size: 10px;
   }
 
-  .state-indicator {
+  .ctrl-btn.icon-btn {
+    padding: 6px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 12.5px;
+    justify-content: center;
+  }
+
+  .ctrl-btn.icon-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .length-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .length-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--c-text-dim);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-right: 2px;
+  }
+
+  /* ── State indicator (floating near viewport) ── */
+  .state-indicator {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--c-text-dim);
     transition: color 0.3s;
+    z-index: 3;
+    background: rgba(5,5,9,0.7);
+    padding: 4px 10px;
+    border-radius: 20px;
+    backdrop-filter: blur(8px);
   }
 
   .state-indicator .dot {
@@ -444,10 +465,14 @@
     width: 100%;
     max-width: 640px;
     padding: 10px 4px 0;
-    display: flex;
+    display: none;
     align-items: flex-end;
     gap: 10px;
     flex-shrink: 0;
+  }
+
+  .composer.visible {
+    display: flex;
   }
 
   .composer textarea {
@@ -479,12 +504,29 @@
 <body>
 
 <header>
-  <div class="logo">
-    <div class="logo-mark"></div>
-    <h1>Parlor</h1>
+  <div class="header-left">
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <h1>Parlor</h1>
+    </div>
+    <span id="modelLabel" class="model-label">Loading model...</span>
   </div>
-  <span id="modelLabel" class="model-label">Loading model...</span>
-  <div id="status" class="status-pill disconnected">Disconnected</div>
+  <div class="header-right">
+    <button id="cameraToggle" class="ctrl-btn">Enable Camera/Mic</button>
+    <button id="speakerToggle" class="ctrl-btn active">Speaker On</button>
+    <div class="length-group">
+      <span class="length-label">Reply</span>
+      <button id="lengthShort" class="ctrl-btn compact">Short</button>
+      <button id="lengthMedium" class="ctrl-btn compact active">Med</button>
+      <button id="lengthLong" class="ctrl-btn compact">Long</button>
+    </div>
+    <button id="textToggle" class="ctrl-btn icon-btn" title="Toggle text input">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 4h10M3 8h7M3 12h9"/>
+      </svg>
+    </button>
+    <div id="status" class="status-pill disconnected">Disconnected</div>
+  </div>
 </header>
 
 <div class="portal-stack">
@@ -492,6 +534,10 @@
   <div id="viewportWrap" class="viewport-wrap loading">
     <div class="viewport-glow"></div>
     <video id="video" autoplay muted playsinline></video>
+    <div class="state-indicator">
+      <div id="stateDot" class="dot loading"></div>
+      <span id="stateText">Loading...</span>
+    </div>
   </div>
 
   <!-- Audio waveform visualizer -->
@@ -502,29 +548,7 @@
   <!-- Transcript -->
   <div id="messages" class="transcript"></div>
 
-  <!-- Controls -->
-  <div class="controls">
-    <div class="control-group">
-      <button id="cameraToggle" class="ctrl-btn">Enable Camera/Mic</button>
-      <button id="speakerToggle" class="ctrl-btn active">Speaker On</button>
-    </div>
-    <div class="length-group">
-      <span class="length-label">Reply</span>
-      <button id="lengthShort" class="ctrl-btn compact">Short</button>
-      <button id="lengthMedium" class="ctrl-btn compact active">Medium</button>
-      <button id="lengthLong" class="ctrl-btn compact">Long</button>
-    </div>
-    <div class="state-indicator">
-      <div id="stateDot" class="dot loading"></div>
-      <span id="stateText">Loading...</span>
-    </div>
-    <span class="on-device-pill">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="12" height="9" rx="2"/><path d="M5 4V3a3 3 0 0 1 6 0v1"/></svg>
-      On-device
-    </span>
-  </div>
-
-  <div class="composer">
+  <div id="composer" class="composer">
     <textarea id="textInput" placeholder="Type a message. If camera is on, the current frame will be sent too."></textarea>
     <button id="sendButton" class="ctrl-btn active">Send</button>
   </div>
@@ -541,6 +565,8 @@ const lengthMedium = $('lengthMedium');
 const lengthLong = $('lengthLong');
 const textInput = $('textInput');
 const sendButton = $('sendButton');
+const textToggle = $('textToggle');
+const composer = $('composer');
 const modelLabel = $('modelLabel');
 const messagesDiv = $('messages'), statusEl = $('status');
 const stateDot = $('stateDot'), stateText = $('stateText');
@@ -555,6 +581,7 @@ let state = 'loading';
 let ignoreIncomingAudio = false;
 let speakerEnabled = true;
 let responseLength = 'medium';
+let composerVisible = false;
 
 // Streaming audio playback state
 let streamSampleRate = 24000;
@@ -1120,6 +1147,13 @@ speakerToggle.addEventListener('click', () => {
 lengthShort.addEventListener('click', () => setResponseLength('short'));
 lengthMedium.addEventListener('click', () => setResponseLength('medium'));
 lengthLong.addEventListener('click', () => setResponseLength('long'));
+
+textToggle.addEventListener('click', () => {
+  composerVisible = !composerVisible;
+  composer.classList.toggle('visible', composerVisible);
+  textToggle.classList.toggle('active', composerVisible);
+  if (composerVisible) textInput.focus();
+});
 
 sendButton.addEventListener('click', sendTextMessage);
 textInput.addEventListener('keydown', (e) => {
