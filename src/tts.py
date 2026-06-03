@@ -236,9 +236,13 @@ def load() -> TTSBackend:
             backend = MLXBackend()
             print(f"TTS: mlx-audio (Apple GPU, sample_rate={backend.sample_rate})")
             return backend
-        except ImportError:
-            print("TTS: mlx-audio not installed, falling back to kokoro-onnx")
+        except Exception as exc:
+            print(f"WARNING: mlx-audio failed ({exc}), falling back to kokoro-onnx")
 
-    backend = ONNXBackend()
-    print(f"TTS: kokoro-onnx (CPU, sample_rate={backend.sample_rate})")
-    return backend
+    try:
+        backend = ONNXBackend()
+        print(f"TTS: kokoro-onnx (CPU, sample_rate={backend.sample_rate})")
+        return backend
+    except Exception as exc:
+        print(f"WARNING: ONNX TTS failed ({exc}), falling back to disabled TTS")
+        return DisabledBackend()

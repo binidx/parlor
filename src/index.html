@@ -591,26 +591,26 @@
     <span id="modelLabel" class="model-label">Loading model...</span>
   </div>
   <div class="header-right">
-    <button id="cameraToggle" class="ctrl-btn">Enable Camera/Mic</button>
-    <button id="speakerToggle" class="ctrl-btn active">Speaker On</button>
+    <button id="cameraToggle" class="ctrl-btn" aria-label="Toggle camera">Enable Camera/Mic</button>
+    <button id="speakerToggle" class="ctrl-btn active" aria-label="Toggle speaker">Speaker On</button>
     <div class="length-group">
       <span class="length-label">Reply</span>
       <button id="lengthShort" class="ctrl-btn compact">Short</button>
       <button id="lengthMedium" class="ctrl-btn compact active">Med</button>
       <button id="lengthLong" class="ctrl-btn compact">Long</button>
     </div>
-    <button id="textToggle" class="ctrl-btn icon-btn" title="Toggle text input">
+    <button id="textToggle" class="ctrl-btn icon-btn" title="Toggle text input" aria-label="Toggle text input">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M3 4h10M3 8h7M3 12h9"/>
       </svg>
     </button>
-    <button id="settingsToggle" class="ctrl-btn icon-btn" title="Settings">
+    <button id="settingsToggle" class="ctrl-btn icon-btn" title="Settings" aria-label="Settings">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="8" cy="8" r="2.5"/>
         <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.1 3.1l.8.8M12.1 12.1l.8.8M12.9 3.1l-.8.8M3.9 12.1l-.8.8"/>
       </svg>
     </button>
-    <div id="status" class="status-pill disconnected">Disconnected</div>
+    <div id="status" class="status-pill disconnected" role="status">Disconnected</div>
   </div>
 </header>
 
@@ -631,7 +631,7 @@
     <video id="video" autoplay muted playsinline></video>
     <div class="state-indicator">
       <div id="stateDot" class="dot loading"></div>
-      <span id="stateText">Loading...</span>
+      <span id="stateText" aria-live="assertive">Loading...</span>
     </div>
     <div id="frameBadge" class="frame-badge" style="display:none">0 frames</div>
   </div>
@@ -642,7 +642,7 @@
   </div>
 
   <!-- Transcript -->
-  <div id="messages" class="transcript"></div>
+  <div id="messages" class="transcript" role="log" aria-live="polite"></div>
 
   <div id="composer" class="composer">
     <textarea id="textInput" placeholder="Type a message. If camera is on, recent frames will be sent too."></textarea>
@@ -747,7 +747,7 @@ function drawWaveform() {
 
     // If no real audio data or very quiet, use ambient drift
     if (!dataArray || amplitude < 0.02) {
-      ambientPhase += 0.0001;
+      ambientPhase = (ambientPhase + 0.0001) % (Math.PI * 200);
       const drift = Math.sin(ambientPhase * 3 + i * 0.4) * 0.5 + 0.5;
       amplitude = 0.03 + drift * 0.04;
     }
@@ -836,18 +836,33 @@ function setState(newState) {
 }
 
 // ── WebSocket ──
+let reconnectDelay = 2000;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_DELAY = 30000;
+
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onopen = () => {
     setStatus('connected', 'Connected');
+    reconnectAttempts = 0;
+    reconnectDelay = 2000;
     if (state !== 'loading') setState('listening');
   };
   ws.onclose = () => {
     setStatus('disconnected', 'Disconnected');
-    setTimeout(connect, 2000);
+    reconnectAttempts++;
+    const delay = Math.min(reconnectDelay * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+    setStatus('disconnected', `Reconnecting in ${Math.round(delay/1000)}s...`);
+    setTimeout(connect, delay);
   };
   ws.onmessage = ({ data }) => {
-    const msg = JSON.parse(data);
+    let msg;
+    try {
+      msg = JSON.parse(data);
+    } catch (e) {
+      console.error('Failed to parse WebSocket message:', e);
+      return;
+    }
     if (msg.type === 'error') {
       addMessage('system', msg.text);
       setStatus('connected', 'Connected');
@@ -857,8 +872,8 @@ function connect() {
         const userMsgs = messagesDiv.querySelectorAll('.msg.user');
         const lastUserMsg = userMsgs[userMsgs.length - 1];
         if (lastUserMsg) {
-          const meta = lastUserMsg.querySelector('.meta');
-          lastUserMsg.innerHTML = `${msg.transcription}${meta ? meta.outerHTML : ''}`;
+          const textSpan = lastUserMsg.querySelector('span');
+          if (textSpan) textSpan.textContent = msg.transcription;
         }
       }
       addMessage('assistant', msg.text, `LLM ${msg.llm_time}s`);
@@ -925,7 +940,10 @@ async function loadConfig() {
       systemPromptDefault = cfg.system_prompt_default;
       systemPromptInput.placeholder = systemPromptDefault;
     }
-  } catch {}
+  } catch (e) {
+    console.error('Failed to load config:', e);
+    modelLabel.textContent = 'Model (config unavailable)';
+  }
 }
 
 function waitForVideoReady(el, timeoutMs = 8000) {
@@ -1128,7 +1146,9 @@ function sampleFrame() {
   const pixels = captureThumbPixels();
   const prevPixels = frameRing.length > 0 ? frameRing[frameRing.length - 1].pixels : null;
   const diff = computeFrameDiff(prevPixels, pixels);
-  const jpeg = captureJpegBase64();
+  // Skip expensive JPEG encoding during non-listening states (model is busy).
+  // JPEG will be captured on-demand in selectKeyframes() when needed.
+  const jpeg = state === 'listening' ? captureJpegBase64() : null;
   const frame = { ts: now, pixels, diff, jpeg };
 
   // Append to ring buffer, evict oldest if full
@@ -1166,7 +1186,7 @@ function selectKeyframes() {
   // Select up to KEYFRAME_MAX frames from ring buffer using diff-based selection.
   // Always include the latest frame. Fill remaining slots with highest-diff frames.
   if (frameRing.length === 0) return [];
-  if (frameRing.length === 1) return [frameRing[0].jpeg];
+  if (frameRing.length === 1) return [frameRing[0].jpeg || captureJpegBase64()];
 
   // Capture a fresh frame right now (most current view)
   const freshPixels = captureThumbPixels();
@@ -1209,7 +1229,8 @@ function selectKeyframes() {
 
   // Sort by timestamp (chronological) and return jpeg strings
   selected.sort((a, b) => a.ts - b.ts);
-  return selected.map(f => f.jpeg);
+  // Lazily capture JPEG for any frames that were stored without one (captured during non-listening)
+  return selected.map(f => f.jpeg || captureJpegBase64());
 }
 
 // ── VAD Handlers ──
@@ -1243,7 +1264,11 @@ function handleSpeechEnd(audio) {
   setState('processing');
   setStatus('processing', 'Processing');
   const camLabel = keyframes.length > 1 ? `with ${keyframes.length} camera frames` : (keyframes.length === 1 ? 'with camera' : '');
-  addMessage('user', '<span class="loading-dots"><span></span><span></span><span></span></span>', camLabel);
+  // Build loading dots as DOM elements (avoids innerHTML for user-visible content)
+  const dotsSpan = document.createElement('span');
+  dotsSpan.className = 'loading-dots';
+  for (let i = 0; i < 3; i++) dotsSpan.appendChild(document.createElement('span'));
+  addMessage('user', dotsSpan, camLabel);
 
   const payload = { audio: wavBase64, tts: speakerEnabled, response_length: responseLength };
   if (keyframes.length > 1) {
@@ -1284,29 +1309,62 @@ function sendTextMessage() {
 }
 
 // ── Float32 @ 16kHz → WAV base64 ──
-function float32ToWavBase64(samples) {
-  const buf = new ArrayBuffer(44 + samples.length * 2);
-  const v = new DataView(buf);
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  w(0,'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); w(8,'WAVE'); w(12,'fmt ');
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true); w(36,'data'); v.setUint32(40, samples.length * 2, true);
+function float32ToWavBase64(samples, sampleRate) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate || 16000) * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = samples.length * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // Write WAV header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate || 16000, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  // Write samples
+  let offset = 44;
   for (let i = 0; i < samples.length; i++) {
     const s = Math.max(-1, Math.min(1, samples[i]));
-    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
   }
-  const bytes = new Uint8Array(buf);
-  let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
+
+  // Convert to base64 using chunked String.fromCharCode
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
 }
 
 // ── Streaming Playback ──
 function stopPlayback() {
-  for (const src of streamSources) {
+  // Use a copy to avoid mutation during iteration (onended callbacks splice from same array)
+  const sources = [...streamSources];
+  streamSources = [];
+  for (const src of sources) {
     try { src.stop(); } catch {}
   }
-  streamSources = [];
   currentSource = null;
   streamNextTime = 0;
 }
@@ -1374,7 +1432,21 @@ function queueAudioChunk(base64Pcm) {
 function addMessage(role, text, meta) {
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-  div.innerHTML = `${text}${meta ? `<div class="meta">${meta}</div>` : ''}`;
+  // Sanitize: use textContent for message body to prevent XSS from LLM responses.
+  // Only use innerHTML for controlled meta/timestamp content.
+  if (text instanceof Node) {
+    div.appendChild(text);
+  } else {
+    const textEl = document.createElement('span');
+    textEl.textContent = text;
+    div.appendChild(textEl);
+  }
+  if (meta) {
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'meta';
+    metaDiv.innerHTML = meta;
+    div.appendChild(metaDiv);
+  }
   messagesDiv.appendChild(div);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }

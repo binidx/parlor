@@ -1,11 +1,13 @@
 """Parlor — on-device, real-time multimodal AI (voice + vision)."""
 
 import asyncio
+import atexit
 import base64
 import binascii
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -27,6 +29,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 HF_REPO = "litert-community/gemma-4-E2B-it-litert-lm"
 HF_FILENAME = "gemma-4-E2B-it.litertlm"
 
+MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "20"))
+_mlx_temp_dir: str | None = None
+
 MLX_SYSTEM_PROMPT_DEFAULT = (
     "You are a friendly, conversational AI assistant. The user is talking to you "
     "through a microphone and may be showing you their camera. "
@@ -46,6 +51,7 @@ _user_system_prompt = os.environ.get("SYSTEM_PROMPT", "").strip()
 LITERT_SYSTEM_PROMPT = _user_system_prompt or LITERT_SYSTEM_PROMPT_DEFAULT
 MLX_SYSTEM_PROMPT = _user_system_prompt or MLX_SYSTEM_PROMPT_DEFAULT
 
+# Non-streaming splitter: uses \s+ to split on whitespace between sentences (handles Latin spacing).
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|\s*$")
 STRUCTURED_REPLY_RE = re.compile(
     r"TRANSCRIPTION:\s*(.*?)\s*RESPONSE:\s*(.*)",
@@ -62,6 +68,7 @@ def split_sentences(text: str) -> list[str]:
     return [s.strip() for s in parts if s.strip()]
 
 
+# Streaming splitter: uses \s* so Chinese text (no space after punctuation) still splits correctly.
 STREAMING_SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s*")
 
 
@@ -214,6 +221,9 @@ def prepare_mlx_model_path(model_path: str) -> str:
         "Patched processor_config for MLX load "
         f"(disabled video processor): {patched_dir}"
     )
+    global _mlx_temp_dir
+    _mlx_temp_dir = str(patched_dir)
+    atexit.register(shutil.rmtree, patched_dir, ignore_errors=True)
     return str(patched_dir)
 
 
@@ -404,6 +414,10 @@ class LiteRTRuntime:
         self.engine.__enter__()
         print("Engine loaded.")
 
+    def close(self) -> None:
+        if self.engine is not None:
+            self.engine.__exit__(None, None, None)
+
     def create_session(self) -> dict[str, Any]:
         tool_result: dict[str, str] = {}
 
@@ -471,7 +485,8 @@ class LiteRTRuntime:
             print(f"LLM ({llm_time:.2f}s) [tool] heard: {transcription!r} -> {text_response}")
             return InferenceResult(transcription, text_response, llm_time)
 
-        text_response = response["content"][0]["text"].strip()
+        content = response.get("content", [])
+        text_response = (content[0].get("text", "") if content else "").strip()
         print(f"LLM ({llm_time:.2f}s) [no tool]: {text_response}")
         return InferenceResult(None, text_response, llm_time, aborted=interrupted.is_set())
 
@@ -578,6 +593,10 @@ class MlxRuntime:
     def close_session(self, session: dict[str, Any]) -> None:
         return None
 
+    def close(self) -> None:
+        """No-op; MLX models don't hold a context manager."""
+        pass
+
     def update_system_prompt(self, session: dict[str, Any], prompt: str) -> None:
         if session["history"][0]["content"][0].get("text") != prompt:
             session["history"][0]["content"][0]["text"] = prompt
@@ -666,6 +685,12 @@ class MlxRuntime:
         session["history"].append(
             {"role": "assistant", "content": [{"type": "text", "text": text_response}]}
         )
+        # Trim history: keep system prompt at index 0, remove oldest user/assistant pairs
+        if len(session["history"]) > MAX_HISTORY_TURNS + 1:
+            excess = len(session["history"]) - (MAX_HISTORY_TURNS + 1)
+            # Remove in pairs (user + assistant) starting after system prompt
+            excess = excess + (excess % 2)  # round up to even to keep pairs
+            del session["history"][1 : 1 + excess]
         return InferenceResult(transcription, text_response, llm_time)
 
 
@@ -699,6 +724,7 @@ def load_models() -> None:
 async def lifespan(app: FastAPI):
     await asyncio.get_event_loop().run_in_executor(None, load_models)
     yield
+    runtime.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -954,9 +980,13 @@ async def websocket_endpoint(ws: WebSocket):
         print("Client disconnected")
     finally:
         recv_task.cancel()
+        try:
+            await recv_task
+        except asyncio.CancelledError:
+            pass
         runtime.close_session(session)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("PORT", "9091"))
     uvicorn.run(app, host="0.0.0.0", port=port)
