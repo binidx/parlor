@@ -515,6 +515,69 @@
     box-shadow: 0 0 0 3px rgba(74,222,128,0.08);
   }
 
+  /* Settings panel */
+  .settings-panel {
+    display: none;
+    position: fixed;
+    top: 52px;
+    right: max(12px, calc((100vw - 720px) / 2 + 12px));
+    width: 380px;
+    max-width: calc(100vw - 24px);
+    background: #0d0d14;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    padding: 16px;
+    z-index: 100;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  }
+  .settings-panel.visible { display: block; }
+
+  .settings-panel label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c-text-dim);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .settings-panel textarea {
+    width: 100%;
+    min-height: 120px;
+    max-height: 260px;
+    resize: vertical;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: var(--c-surface);
+    color: var(--c-text-bright);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .settings-panel textarea::placeholder { color: var(--c-text-dim); }
+  .settings-panel textarea:focus {
+    border-color: rgba(74,222,128,0.25);
+    box-shadow: 0 0 0 3px rgba(74,222,128,0.08);
+  }
+
+  .settings-hint {
+    font-size: 10px;
+    color: var(--c-text-dim);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+
+  .settings-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+  }
+
 </style>
 </head>
 <body>
@@ -541,9 +604,25 @@
         <path d="M3 4h10M3 8h7M3 12h9"/>
       </svg>
     </button>
+    <button id="settingsToggle" class="ctrl-btn icon-btn" title="Settings">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="8" cy="8" r="2.5"/>
+        <path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.1 3.1l.8.8M12.1 12.1l.8.8M12.9 3.1l-.8.8M3.9 12.1l-.8.8"/>
+      </svg>
+    </button>
     <div id="status" class="status-pill disconnected">Disconnected</div>
   </div>
 </header>
+
+<div id="settingsPanel" class="settings-panel">
+  <label for="systemPromptInput">System Prompt</label>
+  <textarea id="systemPromptInput" placeholder="Loading default..."></textarea>
+  <div class="settings-hint">MLX backend requires TRANSCRIPTION / RESPONSE format in the prompt.</div>
+  <div class="settings-actions">
+    <button id="settingsReset" class="ctrl-btn compact">Reset</button>
+    <button id="settingsSave" class="ctrl-btn compact active">Save</button>
+  </div>
+</div>
 
 <div class="portal-stack">
   <!-- Webcam viewport with glow layers -->
@@ -834,12 +913,18 @@ function setResponseLength(length) {
   lengthLong.classList.toggle('active', length === 'long');
 }
 
+let systemPromptDefault = '';
+
 async function loadConfig() {
   try {
     const res = await fetch('/config');
     if (!res.ok) return;
     const cfg = await res.json();
     if (cfg.model_label) modelLabel.textContent = cfg.model_label;
+    if (cfg.system_prompt_default) {
+      systemPromptDefault = cfg.system_prompt_default;
+      systemPromptInput.placeholder = systemPromptDefault;
+    }
   } catch {}
 }
 
@@ -1166,6 +1251,8 @@ function handleSpeechEnd(audio) {
   } else if (keyframes.length === 1) {
     payload.image = keyframes[0];
   }
+  const sp = getSystemPrompt();
+  if (sp) payload.system_prompt = sp;
   ws.send(JSON.stringify(payload));
 }
 
@@ -1190,6 +1277,8 @@ function sendTextMessage() {
   } else if (keyframes.length === 1) {
     payload.image = keyframes[0];
   }
+  const sp = getSystemPrompt();
+  if (sp) payload.system_prompt = sp;
   ws.send(JSON.stringify(payload));
   textInput.value = '';
 }
@@ -1330,6 +1419,66 @@ textToggle.addEventListener('click', () => {
   composer.classList.toggle('visible', composerVisible);
   textToggle.classList.toggle('active', composerVisible);
   if (composerVisible) textInput.focus();
+});
+
+// ── Settings panel ──
+const settingsPanel = document.getElementById('settingsPanel');
+const systemPromptInput = document.getElementById('systemPromptInput');
+const settingsToggleBtn = document.getElementById('settingsToggle');
+const settingsSaveBtn = document.getElementById('settingsSave');
+const settingsResetBtn = document.getElementById('settingsReset');
+
+let settingsVisible = false;
+
+function getSystemPrompt() {
+  return localStorage.getItem('systemPrompt') || '';
+}
+
+settingsToggleBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  settingsVisible = !settingsVisible;
+  settingsPanel.classList.toggle('visible', settingsVisible);
+  settingsToggleBtn.classList.toggle('active', settingsVisible);
+  if (settingsVisible) {
+    systemPromptInput.value = getSystemPrompt();
+    systemPromptInput.focus();
+  }
+});
+
+settingsSaveBtn.addEventListener('click', () => {
+  const val = systemPromptInput.value.trim();
+  if (val) {
+    localStorage.setItem('systemPrompt', val);
+  } else {
+    localStorage.removeItem('systemPrompt');
+  }
+  settingsVisible = false;
+  settingsPanel.classList.remove('visible');
+  settingsToggleBtn.classList.remove('active');
+});
+
+settingsResetBtn.addEventListener('click', () => {
+  localStorage.removeItem('systemPrompt');
+  systemPromptInput.value = '';
+  settingsVisible = false;
+  settingsPanel.classList.remove('visible');
+  settingsToggleBtn.classList.remove('active');
+});
+
+document.addEventListener('click', (e) => {
+  if (settingsVisible && !settingsPanel.contains(e.target) && e.target !== settingsToggleBtn) {
+    settingsVisible = false;
+    settingsPanel.classList.remove('visible');
+    settingsToggleBtn.classList.remove('active');
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && settingsVisible) {
+    settingsVisible = false;
+    settingsPanel.classList.remove('visible');
+    settingsToggleBtn.classList.remove('active');
+  }
 });
 
 sendButton.addEventListener('click', sendTextMessage);

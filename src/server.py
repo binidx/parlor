@@ -26,20 +26,24 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 HF_REPO = "litert-community/gemma-4-E2B-it-litert-lm"
 HF_FILENAME = "gemma-4-E2B-it.litertlm"
 
-LITERT_SYSTEM_PROMPT = (
-    "You are a friendly, conversational AI assistant. The user is talking to you "
-    "through a microphone and showing you their camera. "
-    "You MUST always use the respond_to_user tool to reply. "
-    "First transcribe exactly what the user said, then write your response."
-)
-
-MLX_SYSTEM_PROMPT = (
+MLX_SYSTEM_PROMPT_DEFAULT = (
     "You are a friendly, conversational AI assistant. The user is talking to you "
     "through a microphone and may be showing you their camera. "
     "When you answer, use exactly this format:\n"
     "TRANSCRIPTION: <exactly what the user said>\n"
     "RESPONSE: <your reply in 1-4 short sentences>"
 )
+
+LITERT_SYSTEM_PROMPT_DEFAULT = (
+    "You are a friendly, conversational AI assistant. The user is talking to you "
+    "through a microphone and showing you their camera. "
+    "You MUST always use the respond_to_user tool to reply. "
+    "First transcribe exactly what the user said, then write your response."
+)
+
+_user_system_prompt = os.environ.get("SYSTEM_PROMPT", "").strip()
+LITERT_SYSTEM_PROMPT = _user_system_prompt or LITERT_SYSTEM_PROMPT_DEFAULT
+MLX_SYSTEM_PROMPT = _user_system_prompt or MLX_SYSTEM_PROMPT_DEFAULT
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 STRUCTURED_REPLY_RE = re.compile(
@@ -321,6 +325,26 @@ class LiteRTRuntime:
     def close_session(self, session: dict[str, Any]) -> None:
         session["conversation"].__exit__(None, None, None)
 
+    def update_system_prompt(self, session: dict[str, Any], prompt: str) -> None:
+        if session.get("_system_prompt") == prompt:
+            return
+        session["conversation"].__exit__(None, None, None)
+        tool_result: dict[str, str] = {}
+
+        def respond_to_user(transcription: str, response: str) -> str:
+            tool_result["transcription"] = transcription
+            tool_result["response"] = response
+            return "OK"
+
+        conversation = self.engine.create_conversation(
+            messages=[{"role": "system", "content": prompt}],
+            tools=[respond_to_user],
+        )
+        conversation.__enter__()
+        session["conversation"] = conversation
+        session["tool_result"] = tool_result
+        session["_system_prompt"] = prompt
+
     def infer(
         self,
         session: dict[str, Any],
@@ -457,6 +481,10 @@ class MlxRuntime:
     def close_session(self, session: dict[str, Any]) -> None:
         return None
 
+    def update_system_prompt(self, session: dict[str, Any], prompt: str) -> None:
+        if session["history"][0]["content"][0].get("text") != prompt:
+            session["history"][0]["content"][0]["text"] = prompt
+
     def infer(
         self,
         session: dict[str, Any],
@@ -576,11 +604,13 @@ async def root():
 
 @app.get("/config")
 async def config():
+    default_prompt = MLX_SYSTEM_PROMPT if isinstance(runtime, MlxRuntime) else LITERT_SYSTEM_PROMPT
     return JSONResponse(
         {
             "model_label": runtime.display_name,
             "backend": runtime.backend_name,
             "model_path": MODEL_PATH,
+            "system_prompt_default": default_prompt,
         }
     )
 
@@ -618,6 +648,10 @@ async def websocket_endpoint(ws: WebSocket):
             interrupted.clear()
             transcription = None
             runtime_msg = dict(msg)
+
+            if msg.get("system_prompt"):
+                runtime.update_system_prompt(session, msg["system_prompt"])
+                runtime_msg.pop("system_prompt", None)
 
             if msg.get("audio") and asr_backend is not None:
                 audio_path = write_temp_blob(msg["audio"], ".wav")
