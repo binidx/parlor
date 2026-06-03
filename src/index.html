@@ -194,6 +194,22 @@
     z-index: 3;
   }
 
+  .viewport-wrap .frame-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 3;
+    background: rgba(0, 0, 0, 0.55);
+    color: #4ade80;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    letter-spacing: 0.3px;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+  }
+
   /* Three glow layers */
   .viewport-wrap::before,
   .viewport-wrap::after,
@@ -538,6 +554,7 @@
       <div id="stateDot" class="dot loading"></div>
       <span id="stateText">Loading...</span>
     </div>
+    <div id="frameBadge" class="frame-badge" style="display:none">0 frames</div>
   </div>
 
   <!-- Audio waveform visualizer -->
@@ -549,7 +566,7 @@
   <div id="messages" class="transcript"></div>
 
   <div id="composer" class="composer">
-    <textarea id="textInput" placeholder="Type a message. If camera is on, the current frame will be sent too."></textarea>
+    <textarea id="textInput" placeholder="Type a message. If camera is on, recent frames will be sent too."></textarea>
     <button id="sendButton" class="ctrl-btn active">Send</button>
   </div>
 </div>
@@ -590,6 +607,21 @@ let streamSources = [];         // Active AudioBufferSourceNodes
 let streamTtsTime = null;
 let vadReady = false;
 let mediaReady = false;
+
+// ── Frame Sampler (continuous background capture for video understanding) ──
+const FRAME_RING_SIZE = 8;       // max frames in ring buffer
+const FRAME_SAMPLE_INTERVAL = 1500; // ms between background captures
+const FRAME_THUMB_W = 80;       // thumbnail width for diff computation
+const FRAME_THUMB_H = 60;       // thumbnail height for diff computation
+const FRAME_JPEG_W = 320;       // full frame width sent to model
+const FRAME_JPEG_Q = 0.7;       // JPEG quality
+const KEYFRAME_MAX = 5;         // max keyframes to send per turn
+let frameRing = [];             // ring buffer: { ts, pixels (Uint8Array grayscale), jpeg }
+let frameSamplerTimer = null;
+let frameSamplerCanvas = null;  // offscreen canvas for thumbnail diff
+let frameSamplerCtx = null;
+let frameJpegCanvas = null;     // offscreen canvas for full-res JPEG
+let frameJpegCtx = null;
 
 // ── Waveform Visualizer ──
 let analyser, micSource;
@@ -942,6 +974,7 @@ async function requestMediaAccess() {
     mediaReady = true;
     cameraEnabled = true;
     setCameraButton(true);
+    startFrameSampler();
     if (!vadReady) {
       await initVad();
     }
@@ -963,6 +996,135 @@ function captureFrame() {
   canvas.width = 320; canvas.height = video.videoHeight * scale;
   canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+}
+
+// ── Frame Sampler: continuous background capture + keyframe selection ──
+
+function initFrameSampler() {
+  frameSamplerCanvas = document.createElement('canvas');
+  frameSamplerCanvas.width = FRAME_THUMB_W;
+  frameSamplerCanvas.height = FRAME_THUMB_H;
+  frameSamplerCtx = frameSamplerCanvas.getContext('2d', { willReadFrequently: true });
+  frameJpegCanvas = document.createElement('canvas');
+  frameJpegCanvas.width = FRAME_JPEG_W;
+  frameJpegCtx = frameJpegCanvas.getContext('2d');
+  frameRing = [];
+}
+
+function captureThumbPixels() {
+  // Draw current video frame as grayscale thumbnail, return Uint8Array of pixel values
+  frameSamplerCtx.drawImage(video, 0, 0, FRAME_THUMB_W, FRAME_THUMB_H);
+  const rgba = frameSamplerCtx.getImageData(0, 0, FRAME_THUMB_W, FRAME_THUMB_H).data;
+  const gray = new Uint8Array(FRAME_THUMB_W * FRAME_THUMB_H);
+  for (let i = 0; i < gray.length; i++) {
+    const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+    gray[i] = (r * 77 + g * 150 + b * 29) >> 8; // fast grayscale
+  }
+  return gray;
+}
+
+function computeFrameDiff(prev, curr) {
+  if (!prev || !curr || prev.length !== curr.length) return 1.0;
+  let sum = 0;
+  for (let i = 0; i < prev.length; i++) sum += Math.abs(prev[i] - curr[i]);
+  return sum / (prev.length * 255); // normalized 0..1
+}
+
+function captureJpegBase64() {
+  const scale = FRAME_JPEG_W / video.videoWidth;
+  frameJpegCanvas.height = video.videoHeight * scale;
+  frameJpegCtx.drawImage(video, 0, 0, FRAME_JPEG_W, frameJpegCanvas.height);
+  return frameJpegCanvas.toDataURL('image/jpeg', FRAME_JPEG_Q).split(',')[1];
+}
+
+function sampleFrame() {
+  if (!cameraEnabled || !mediaReady || !video.videoWidth) return;
+  const now = Date.now();
+  const pixels = captureThumbPixels();
+  const prevPixels = frameRing.length > 0 ? frameRing[frameRing.length - 1].pixels : null;
+  const diff = computeFrameDiff(prevPixels, pixels);
+  const jpeg = captureJpegBase64();
+  const frame = { ts: now, pixels, diff, jpeg };
+
+  // Append to ring buffer, evict oldest if full
+  if (frameRing.length >= FRAME_RING_SIZE) frameRing.shift();
+  frameRing.push(frame);
+
+  // Update frame badge
+  const badge = $('frameBadge');
+  if (badge) {
+    badge.style.display = '';
+    badge.textContent = `${frameRing.length} frames`;
+  }
+}
+
+function startFrameSampler() {
+  if (frameSamplerTimer) return;
+  initFrameSampler();
+  // Capture first frame immediately
+  sampleFrame();
+  frameSamplerTimer = setInterval(sampleFrame, FRAME_SAMPLE_INTERVAL);
+  console.log(`Frame sampler started (${FRAME_SAMPLE_INTERVAL}ms interval, ring=${FRAME_RING_SIZE})`);
+}
+
+function stopFrameSampler() {
+  if (frameSamplerTimer) {
+    clearInterval(frameSamplerTimer);
+    frameSamplerTimer = null;
+  }
+  frameRing = [];
+  const badge = $('frameBadge');
+  if (badge) badge.style.display = 'none';
+}
+
+function selectKeyframes() {
+  // Select up to KEYFRAME_MAX frames from ring buffer using diff-based selection.
+  // Always include the latest frame. Fill remaining slots with highest-diff frames.
+  if (frameRing.length === 0) return [];
+  if (frameRing.length === 1) return [frameRing[0].jpeg];
+
+  // Capture a fresh frame right now (most current view)
+  const freshPixels = captureThumbPixels();
+  const freshDiff = computeFrameDiff(frameRing[frameRing.length - 1].pixels, freshPixels);
+  const freshJpeg = captureJpegBase64();
+  const freshFrame = { ts: Date.now(), pixels: freshPixels, diff: freshDiff, jpeg: freshJpeg };
+
+  // Build candidate pool (all ring frames except we'll replace "latest" with fresh)
+  const candidates = frameRing.slice(); // shallow copy
+
+  // Always include the fresh (latest) frame
+  const selected = [freshFrame];
+  const selectedTs = new Set([freshFrame.ts]);
+
+  // Sort remaining candidates by diff (descending) to pick most informative frames
+  const sorted = candidates
+    .filter(f => !selectedTs.has(f.ts) && f.diff > 0.01) // skip near-duplicates
+    .sort((a, b) => b.diff - a.diff);
+
+  for (const f of sorted) {
+    if (selected.length >= KEYFRAME_MAX) break;
+    // Avoid frames too close in time to already-selected ones (min 1s gap)
+    const tooClose = selected.some(s => Math.abs(s.ts - f.ts) < 1000);
+    if (!tooClose) {
+      selected.push(f);
+      selectedTs.add(f.ts);
+    }
+  }
+
+  // If still under budget, fill with evenly-spaced frames from ring
+  if (selected.length < KEYFRAME_MAX && candidates.length > 0) {
+    const step = Math.max(1, Math.floor(candidates.length / (KEYFRAME_MAX - selected.length + 1)));
+    for (let i = 0; i < candidates.length && selected.length < KEYFRAME_MAX; i += step) {
+      if (!selectedTs.has(candidates[i].ts)) {
+        selected.push(candidates[i]);
+        selectedTs.add(candidates[i].ts);
+      }
+    }
+  }
+
+  // Sort by timestamp (chronological) and return jpeg strings
+  selected.sort((a, b) => a.ts - b.ts);
+  return selected.map(f => f.jpeg);
 }
 
 // ── VAD Handlers ──
@@ -991,14 +1153,19 @@ function handleSpeechEnd(audio) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
   const wavBase64 = float32ToWavBase64(audio);
-  const imageBase64 = captureFrame();
+  const keyframes = cameraEnabled ? selectKeyframes() : [];
 
   setState('processing');
   setStatus('processing', 'Processing');
-  addMessage('user', '<span class="loading-dots"><span></span><span></span><span></span></span>', imageBase64 ? 'with camera' : '');
+  const camLabel = keyframes.length > 1 ? `with ${keyframes.length} camera frames` : (keyframes.length === 1 ? 'with camera' : '');
+  addMessage('user', '<span class="loading-dots"><span></span><span></span><span></span></span>', camLabel);
 
   const payload = { audio: wavBase64, tts: speakerEnabled, response_length: responseLength };
-  if (imageBase64) payload.image = imageBase64;
+  if (keyframes.length > 1) {
+    payload.images = keyframes;
+  } else if (keyframes.length === 1) {
+    payload.image = keyframes[0];
+  }
   ws.send(JSON.stringify(payload));
 }
 
@@ -1010,14 +1177,19 @@ function sendTextMessage() {
     return;
   }
 
-  const imageBase64 = captureFrame();
-  addMessage('user', text, imageBase64 ? 'typed · with camera' : 'typed');
+  const keyframes = cameraEnabled ? selectKeyframes() : [];
+  const camLabel = keyframes.length > 1 ? `typed · ${keyframes.length} camera frames` : (keyframes.length === 1 ? 'typed · with camera' : 'typed');
+  addMessage('user', text, camLabel);
 
   setState('processing');
   setStatus('processing', 'Processing');
 
   const payload = { text, tts: speakerEnabled, response_length: responseLength };
-  if (imageBase64) payload.image = imageBase64;
+  if (keyframes.length > 1) {
+    payload.images = keyframes;
+  } else if (keyframes.length === 1) {
+    payload.image = keyframes[0];
+  }
   ws.send(JSON.stringify(payload));
   textInput.value = '';
 }
@@ -1130,6 +1302,11 @@ cameraToggle.addEventListener('click', async () => {
 
   cameraEnabled = !cameraEnabled;
   setCameraButton(cameraEnabled);
+  if (cameraEnabled) {
+    startFrameSampler();
+  } else {
+    stopFrameSampler();
+  }
 });
 
 speakerToggle.addEventListener('click', () => {

@@ -158,27 +158,46 @@ def response_max_tokens(msg: dict[str, Any], default_max_tokens: int) -> int:
     return max(default_max_tokens, 256)
 
 
+def _image_count(msg: dict[str, Any]) -> int:
+    if msg.get("images"):
+        return len(msg["images"])
+    return 1 if msg.get("image") else 0
+
+
 def describe_user_turn(msg: dict[str, Any]) -> str:
     explicit_text = str(msg.get("text", "") or "").strip()
     length_hint = response_length_instruction(msg)
-    if explicit_text and msg.get("image") and not msg.get("audio"):
+    n_images = _image_count(msg)
+    has_image = n_images > 0
+    multi_image = n_images > 1
+
+    vision_hint = ""
+    if multi_image:
+        vision_hint = (
+            f"We captured {n_images} frames from your camera over the last few seconds "
+            "(arranged chronologically). Describe what you see and any motion or changes between frames. "
+        )
+    elif has_image:
+        vision_hint = "They are also showing their camera. Respond referencing what you see if relevant. "
+
+    if explicit_text and has_image and not msg.get("audio"):
         return (
             f'The user said: "{explicit_text}". '
-            "They are also showing their camera. Respond to what they said, referencing what you see if relevant. "
+            f"{vision_hint}"
             f"{length_hint}"
         )
-    if explicit_text and not msg.get("audio") and not msg.get("image"):
+    if explicit_text and not msg.get("audio") and not has_image:
         return f"{explicit_text}\n\nAdditional instruction: {length_hint}"
-    if msg.get("audio") and msg.get("image"):
+    if msg.get("audio") and has_image:
         return (
             "The user just spoke to you while showing their camera. "
-            "Respond to what they said, referencing what you see if relevant. "
+            f"{vision_hint}"
             f"{length_hint}"
         )
     if msg.get("audio"):
         return f"The user just spoke to you. Respond to what they said. {length_hint}"
-    if msg.get("image"):
-        return f"The user is showing you their camera. Describe what you see. {length_hint}"
+    if has_image:
+        return f"The user is showing you their camera. {vision_hint}{length_hint}"
     return f"{msg.get('text', 'Hello!')}\n\nAdditional instruction: {length_hint}"
 
 
@@ -186,7 +205,10 @@ def build_turn_content(msg: dict[str, Any], audio_key: str, image_key: str) -> l
     content: list[dict[str, str]] = []
     if msg.get("audio"):
         content.append({"type": "audio", audio_key: msg["audio"]})
-    if msg.get("image"):
+    if msg.get("images"):
+        for img in msg["images"]:
+            content.append({"type": "image", image_key: img})
+    elif msg.get("image"):
         content.append({"type": "image", image_key: msg["image"]})
     content.append({"type": "text", "text": describe_user_turn(msg)})
     return content
@@ -305,7 +327,12 @@ class LiteRTRuntime:
         msg: dict[str, Any],
         interrupted: asyncio.Event,
     ) -> InferenceResult:
-        content = build_turn_content(msg, audio_key="blob", image_key="blob")
+        # LiteRT only supports single image — collapse multi-image to latest frame
+        lite_msg = dict(msg)
+        if lite_msg.get("images"):
+            lite_msg["image"] = lite_msg["images"][-1]
+            lite_msg.pop("images", None)
+        content = build_turn_content(lite_msg, audio_key="blob", image_key="blob")
         tool_result = session["tool_result"]
 
         t0 = time.time()
@@ -439,15 +466,16 @@ class MlxRuntime:
         current_turn = {"role": "user", "content": build_turn_content(msg, "data", "data")}
         messages = session["history"] + [current_turn]
 
+        n_images = _image_count(msg)
         prompt = self.apply_chat_template(
             self.processor,
             self.model.config,
             messages,
-            num_images=1 if msg.get("image") else 0,
+            num_images=n_images,
             num_audios=1 if msg.get("audio") else 0,
         )
 
-        image_path = None
+        image_paths: list[str] = []
         audio_path = None
         chunks: list[str] = []
         aborted = False
@@ -457,16 +485,20 @@ class MlxRuntime:
         max_tokens = response_max_tokens(msg, self.max_tokens)
 
         try:
-            if msg.get("image"):
-                image_path = write_temp_blob(msg["image"], ".jpg")
+            if msg.get("images"):
+                for img_b64 in msg["images"]:
+                    image_paths.append(write_temp_blob(img_b64, ".jpg"))
+            elif msg.get("image"):
+                image_paths.append(write_temp_blob(msg["image"], ".jpg"))
             if msg.get("audio"):
                 audio_path = write_temp_blob(msg["audio"], ".wav")
 
+            image_arg = image_paths if len(image_paths) > 1 else (image_paths[0] if image_paths else None)
             for chunk in self.stream_generate(
                 self.model,
                 self.processor,
                 prompt,
-                image=image_path,
+                image=image_arg,
                 audio=audio_path,
                 max_tokens=max_tokens,
                 temperature=self.temperature,
@@ -479,9 +511,10 @@ class MlxRuntime:
                     break
                 chunks.append(chunk.text)
         finally:
-            for path in (image_path, audio_path):
-                if path:
-                    Path(path).unlink(missing_ok=True)
+            for path in image_paths:
+                Path(path).unlink(missing_ok=True)
+            if audio_path:
+                Path(audio_path).unlink(missing_ok=True)
 
         llm_time = time.time() - t0
         raw_response = "".join(chunks).strip()
