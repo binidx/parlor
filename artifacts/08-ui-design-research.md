@@ -1,203 +1,203 @@
-# UI Design Research: Gemma 4 Live Frontend
+# UI 设计研究：Gemma 4 Live 前端
 
-## What We're Building
-A real-time voice + vision AI assistant demo running on-device (Gemma 4 on Apple Silicon). The user speaks into a microphone, shows things to a webcam, and the AI responds with voice + text. Key features: VAD-driven hands-free, barge-in support, tool calling, sub-3s latency.
+## 我们在构建什么
+一个运行在设备端（Apple Silicon 上的 Gemma 4）的实时语音 + 视觉 AI 助手演示。用户对着麦克风说话，向摄像头展示物品，AI 用语音 + 文字回复。核心特性：VAD 驱动的免提操作、打断支持、工具调用、低于 3 秒延迟。
 
-## Competitive Landscape Analysis
+## 竞品分析
 
-### ChatGPT Advanced Voice Mode
-- **Nov 2025 pivot**: Moved from separate orb screen → integrated voice in main chat thread
-- Real-time transcription streams inline as AI speaks
-- Tool results (maps, images, links) appear inline alongside voice
-- Key insight: **Voice without text feels ungrounded** — users want to read what was said
+### ChatGPT 高级语音模式
+- **2025 年 11 月转型**：从独立的球体界面 → 语音集成到主聊天线程中
+- AI 说话时实时转录文字内联显示
+- 工具结果（地图、图片、链接）与语音内联显示
+- 关键洞察：**没有文字的语音感觉不踏实** — 用户想看到说了什么
 
 ### Google Gemini Live
-- Material Design with fluid, ethereal four-color shapes
-- Lottie animations synced to WebSocket audio events
-- Tight animation↔audio synchronization is what makes it feel polished
-- Generative UI: dynamic visual cards customized per query
+- Material Design 风格，流畅、空灵的四色形状
+- Lottie 动画与 WebSocket 音频事件同步
+- 紧密的动画-音频同步是其精致感的关键
+- 生成式 UI：根据查询动态生成定制的可视化卡片
 
-### Apple Siri (iOS 18+)
-- **Edge glow** around entire screen border — non-intrusive, content stays visible
-- Glow responds to voice cadence (visual proof of listening)
-- Haptic feedback on activation
-- Key insight: **Ambient presence > screen takeover**
+### Apple Siri（iOS 18+）
+- 屏幕边缘**光晕** — 非侵入式，内容保持可见
+- 光晕响应语音节奏（正在倾听的视觉反馈）
+- 激活时的触觉反馈
+- 关键洞察：**环境式存在 > 全屏占据**
 
-### Hume AI (Empathic Voice Interface)
-- Real-time emotion analysis bar alongside conversation
-- Prosody analysis (tone, rhythm, timbre) for natural turn-taking
-- 300ms TTFB — feels instant
-- Key insight: **Emotional visualization creates connection**
+### Hume AI（共情语音界面）
+- 对话旁的实时情绪分析条
+- 韵律分析（语调、节奏、音色）用于自然的轮次切换
+- 300ms TTFB — 感觉即时
+- 关键洞察：**情绪可视化创造连接感**
 
-### ElevenLabs UI (Open Source)
-- Three.js audio-reactive orb with four states (idle/listening/thinking/talking)
-- 17 components: orb, waveform, bar visualizer, conversation bar, transcript viewer
-- Word-by-word transcript highlighting synced to audio
-- Generative UI: dynamic forms during voice conversations
+### ElevenLabs UI（开源）
+- Three.js 音频响应球体，四种状态（空闲/倾听/思考/说话）
+- 17 个组件：球体、波形、柱状可视化、对话栏、转录查看器
+- 逐字高亮转录与音频同步
+- 生成式 UI：语音对话中的动态表单
 
 ### LiveKit Agents UI
-- Five visualizer styles: Aura (WebGL), Wave, Radial, Grid, Bar
-- Each has distinct behavior per state (connecting/speaking/listening/thinking)
-- AgentChatTranscript + visualizer + controls in composable layout
+- 五种可视化风格：Aura（WebGL）、Wave、Radial、Grid、Bar
+- 每种在不同状态下有不同行为（连接中/说话中/倾听中/思考中）
+- AgentChatTranscript + 可视化器 + 控件的可组合布局
 
 ### Perplexity Voice
-- Voice as input method for search — results + citations appear while AI speaks
-- "Voice lock" for ambient listening mode
-- Sub-1-second first spoken response
-- Key insight: **Showing sources alongside voice builds trust**
+- 语音作为搜索输入方式 — AI 说话时显示结果和引用
+- "语音锁定"用于环境监听模式
+- 低于 1 秒的首次语音响应
+- 关键洞察：**在语音旁展示来源建立信任**
 
-## Synthesized Design Principles
+## 综合设计原则
 
-1. **Audio-reactive animation is the #1 feedback signal** — visuals must respond to actual audio energy, not just boolean states
-2. **Four universal states**: Idle, Listening, Thinking, Speaking — every product distinguishes these
-3. **Dark backgrounds** are near-universal for voice interfaces — makes glowing elements pop
-4. **Real-time transcripts are now expected** — voice-only feels ungrounded (ChatGPT proved this)
-5. **The orb/sphere is the dominant metaphor** — organic, alive, non-threatening
-6. **Barge-in must feel instant** — abrupt visual transition, not smooth animation
+1. **音频响应动画是第一反馈信号** — 视觉效果必须响应实际音频能量，而非仅仅是布尔状态
+2. **四种通用状态**：空闲、倾听、思考、说话 — 每个产品都区分这些状态
+3. **深色背景**在语音界面中几乎是通用的 — 使发光元素更突出
+4. **实时转录已成为标配** — 纯语音感觉不踏实（ChatGPT 已证明）
+5. **球体/球形是主导隐喻** — 有机的、有生命力的、非威胁性的
+6. **打断必须感觉即时** — 突然的视觉过渡，而非平滑动画
 
-## Design Alternatives
+## 设计方案
 
-### A. "The Living Canvas" — Orb-Centric
+### A. "活画布" — 以球体为中心
 ```
 ┌─────────────────────────────────────┐
 │                                     │
 │           ┌───┐                     │
-│           │cam│  (small PiP)        │
+│           │cam│  (小画中画)         │
 │           └───┘                     │
 │                                     │
 │         ╭──────────╮                │
-│        ╱  LARGE ORB ╲              │
-│       │  audio-reactive│            │
-│        ╲   gradient   ╱             │
+│        ╱  大球体    ╲              │
+│       │  音频响应    │            │
+│        ╲   渐变     ╱             │
 │         ╰──────────╯                │
 │                                     │
-│    "I see you at a desk..."         │
+│    "我看到你在一张桌子前..."         │
 │                        LLM: 2.1s   │
 │                                     │
 └─────────────────────────────────────┘
 ```
-- Full-screen dark bg, large centered audio-reactive orb
-- Webcam as small circle PiP in corner
-- Transcript fades in/out at bottom
-- **Pros**: Visually stunning, great for demos
-- **Cons**: De-emphasizes webcam (key differentiator), limited transcript
+- 全屏深色背景，大居中音频响应球体
+- 摄像头作为角落的小圆形画中画
+- 转录文字在底部淡入淡出
+- **优点**：视觉效果惊艳，适合演示
+- **缺点**：弱化了摄像头（关键差异化点），转录空间有限
 
-### B. "The Stage" — Camera-Forward with Overlay
+### B. "舞台" — 摄像头优先叠加层
 ```
 ┌─────────────────────────────────────┐
 │ ╔═══════════════════════════════╗   │
 │ ║                               ║   │
-│ ║      FULL-SCREEN WEBCAM       ║   │
-│ ║       (with edge glow)        ║   │
+│ ║        全屏摄像头画面          ║   │
+│ ║       （带边缘光晕）           ║   │
 │ ║                               ║   │
 │ ╠═══════════════════════════════╣   │
-│ ║ ≋≋≋ waveform ≋≋≋  │ Listening║   │
-│ ║ You: What do you see?        ║   │
-│ ║ AI: I see a beautiful...     ║   │
+│ ║ ≋≋≋ 波形 ≋≋≋  │ 倾听中      ║   │
+│ ║ 你：你看到了什么？            ║   │
+│ ║ AI：我看到一个漂亮的...       ║   │
 │ ╚═══════════════════════════════╝   │
 └─────────────────────────────────────┘
 ```
-- Webcam fills the screen, edge glow indicates state (Siri-inspired)
-- Semi-transparent overlay at bottom for transcript
-- **Pros**: Camera front-and-center, immersive
-- **Cons**: Text readability over video, less structured
+- 摄像头填满屏幕，边缘光晕指示状态（Siri 风格）
+- 底部半透明叠加层显示转录
+- **优点**：摄像头居于核心位置，沉浸感强
+- **缺点**：视频上的文字可读性差，结构感较弱
 
-### C. "The Companion" — Polished Split Layout
+### C. "伴侣" — 精致分栏布局
 ```
 ┌──────────────────┬──────────────────┐
 │                  │  Gemma 4 Live    │
 │                  │                  │
-│    WEBCAM FEED   │  You: Hello!     │
-│    (with glow    │  AI: Hi there!   │
-│     border)      │                  │
-│                  │  You: What's...  │
-│                  │  AI: I can see...│
+│   摄像头画面     │  你：你好！      │
+│   （带发光边框） │  AI：你好呀！    │
 │                  │                  │
-│                  │ ≋≋ waveform ≋≋   │
-│                  │ [Cam] [Status]   │
+│                  │  你：什么...     │
+│                  │  AI：我能看到... │
+│                  │                  │
+│                  │ ≋≋ 波形 ≋≋       │
+│                  │ [摄像头] [状态]   │
 └──────────────────┴──────────────────┘
 ```
-- Evolution of current layout with visual polish
-- Left: webcam with state-reactive border glow
-- Right: modern chat with waveform at bottom
-- **Pros**: Familiar, balanced, practical, full chat history
-- **Cons**: Less visually dramatic, "just another chat app"
+- 当前布局的进化版，增加视觉打磨
+- 左侧：带状态响应边框光晕的摄像头
+- 右侧：底部带波形的现代聊天界面
+- **优点**：熟悉、平衡、实用，完整聊天历史
+- **缺点**：视觉效果不够突出，"又一个聊天应用"
 
-### D. "The Portal" — Centered Multimodal (CHOSEN)
+### D. "传送门" — 居中多模态（已选中）
 ```
 ┌─────────────────────────────────────┐
 │           Gemma 4 Live    ● 2.1s    │
 │                                     │
 │        ┌─────────────────┐          │
 │        │                 │          │
-│        │   WEBCAM FEED   │ ← glow  │
-│        │   (large, round │   border │
-│        │    corners)     │   shows  │
-│        │                 │   state  │
+│        │   摄像头画面    │ ← 发光   │
+│        │   （大尺寸，圆角│   边框    │
+│        │    ）           │   显示    │
+│        │                 │   状态    │
 │        └─────────────────┘          │
 │                                     │
-│      ≋≋≋≋≋ audio waveform ≋≋≋≋≋    │
+│      ≋≋≋≋≋ 音频波形 ≋≋≋≋≋         │
 │                                     │
 │   ┌─────────────────────────────┐   │
-│   │ You: What do you see?       │   │
-│   │ AI: I see you sitting at... │   │
+│   │ 你：你看到了什么？           │   │
+│   │ AI：我看到你坐在一张...      │   │
 │   └─────────────────────────────┘   │
 │                                     │
-│     [Camera]  ● Listening  [Mute]   │
+│     [摄像头]  ● 倴听中  [静音]      │
 └─────────────────────────────────────┘
 ```
-- Centered vertical stack: webcam → waveform → transcript → controls
-- Webcam border is the primary state indicator (animated gradient glow)
-- Audio-reactive waveform between camera and transcript
-- Compact transcript (latest exchange, not full history)
-- **Pros**: Premium centered feel, camera prominent, clear state, responsive
-- **Cons**: Slightly less space for each element
+- 居中垂直堆叠：摄像头 → 波形 → 转录 → 控件
+- 摄像头边框是主要状态指示器（动画渐变光晕）
+- 摄像头和转录之间的音频响应波形
+- 紧凑转录（最近的对话，非完整历史）
+- **优点**：高端居中感，摄像头突出，状态清晰，响应迅速
+- **缺点**：每个元素的空间略少
 
-### E. "The Ambient" — Full-screen Gradient Mesh
+### E. "氛围" — 全屏渐变网格
 ```
 ┌─────────────────────────────────────┐
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-│ ░░░░░░  gradient mesh bg  ░░░░░░░░ │
-│ ░░░░░  that breathes and  ░░░░░░░░ │
-│ ░░░░  reacts to audio  ░░░░░░░░░░░ │
+│ ░░░░░░  渐变网格背景  ░░░░░░░░░░░ │
+│ ░░░░░  呼吸效果并响应  ░░░░░░░░░░ │
+│ ░░░░  音频  ░░░░░░░░░░░░░░░░░░░░░ │
 │ ░░░░░    ┌──────────┐     ░░░░░░░░ │
-│ ░░░░░    │  WEBCAM   │    ░░░░░░░░ │
-│ ░░░░░    │ (circle)  │    ░░░░░░░░ │
+│ ░░░░░    │  摄像头   │    ░░░░░░░░ │
+│ ░░░░░    │ (圆形)    │    ░░░░░░░░ │
 │ ░░░░░    └──────────┘     ░░░░░░░░ │
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-│ ░░░░  "I see you at a desk"  ░░░░░ │
+│ ░░░░  "我看到你在一张桌子前"  ░░░░░ │
 │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
 └─────────────────────────────────────┘
 ```
-- Entire background is audio-reactive gradient mesh
-- Webcam in a circle, like a crystal ball
-- Transcript floats over the gradient
-- **Pros**: Most visually unique and impressive
-- **Cons**: Complex to build, potentially distracting, readability concerns
+- 整个背景是音频响应的渐变网格
+- 摄像头呈圆形，如水晶球
+- 转录文字漂浮在渐变之上
+- **优点**：视觉上最独特、最令人印象深刻
+- **缺点**：构建复杂，可能分散注意力，可读性存疑
 
-## Decision: Alternative D "The Portal"
+## 决策：方案 D "传送门"
 
-### Why This Design Wins
+### 为什么选择这个设计
 
-1. **Camera prominence**: The centered webcam is the hero — matching the multimodal differentiator. Users immediately see what makes this different from text chatbots.
+1. **摄像头突出**：居中的摄像头是主角 — 匹配多模态差异化。用户立刻看到它与文本聊天机器人的不同。
 
-2. **State communication**: The webcam border glow is large and unmissable. It wraps the primary visual element, so state is always in your peripheral vision.
+2. **状态传达**：摄像头边框光晕大且醒目。它包裹着主要视觉元素，因此状态始终在你的周边视野中。
 
-3. **Audio waveform**: A canvas-based waveform between camera and transcript provides continuous visual feedback that the system is alive and responsive.
+3. **音频波形**：摄像头和转录之间的 Canvas 波形提供持续的视觉反馈，表明系统是活跃且响应的。
 
-4. **Transcript grounding**: Compact but always visible. Users can verify what they said and what the AI heard.
+4. **转录锚定**：紧凑但始终可见。用户可以验证自己说了什么以及 AI 听到了什么。
 
-5. **Centered layout**: Feels premium, "app-like", works on any screen size. Better than a left-right split for a demo.
+5. **居中布局**：感觉高端、"应用感强"，适配任何屏幕尺寸。对演示来说优于左右分栏。
 
-6. **Buildable**: CSS animations + Canvas waveform. No Three.js or WebGL needed. Fits the single-file architecture.
+6. **可构建**：CSS 动画 + Canvas 波形。不需要 Three.js 或 WebGL。符合单文件架构。
 
-7. **Demo-optimized**: Latency metrics visible but subtle. State transitions are dramatic enough to impress an audience.
+7. **演示优化**：延迟指标可见但不突兀。状态转换足够戏剧化，能打动观众。
 
-### Visual Design Tokens
-- Background: Deep dark (#050508) with subtle radial gradient
-- State colors: Listening=#4ade80 (green), Processing=#f59e0b (amber), Speaking=#818cf8 (indigo)
-- Border glow: 20px spread animated box-shadow matching state color
-- Waveform: Canvas bars responding to audio analyser
-- Typography: System font stack, size 14-16px for readability
-- Webcam: 16:9, max-width 640px, border-radius 16px
-- Transcript: Semi-transparent dark card, max 3-4 messages visible
+### 视觉设计令牌
+- 背景：深黑（#050508），带微妙的径向渐变
+- 状态颜色：倾听=#4ade80（绿色），处理中=#f59e0b（琥珀色），说话中=#818cf8（靛蓝色）
+- 边框光晕：20px 扩散动画 box-shadow，匹配状态颜色
+- 波形：Canvas 柱状图响应音频分析器
+- 字体：系统字体栈，14-16px 大小保证可读性
+- 摄像头：16:9，最大宽度 640px，圆角 16px
+- 转录：半透明深色卡片，最多显示 3-4 条消息

@@ -1,75 +1,75 @@
-# Gemma 4 Model Overview
+# Gemma 4 模型概述
 
-## Model Family
+## 模型家族
 
-Gemma 4 was released April 2, 2026 by Google DeepMind under **Apache 2.0** license.
+Gemma 4 由 Google DeepMind 于 2026 年 4 月 2 日发布，采用 **Apache 2.0** 许可证。
 
-| Variant | Total Params | Effective Params | Context | Modalities | VRAM (4-bit) | VRAM (bf16) |
+| 变体 | 总参数量 | 有效参数量 | 上下文长度 | 模态支持 | 显存（4-bit） | 显存（bf16） |
 |---------|-------------|-----------------|---------|------------|-------------|-------------|
-| **E2B** | 5.1B | 2.3B | 128K | Text, Image, Video, **Audio** | 4-5 GB | 10-15 GB |
-| **E4B** | 8B | 4.5B | 128K | Text, Image, Video, **Audio** | 5.5-6 GB | ~16 GB |
-| **26B-A4B (MoE)** | 26B | 3.8B active | 256K | Text, Image, Video | 16-18 GB | ~52 GB |
-| **31B (Dense)** | 31B | 31B | 256K | Text, Image, Video | 17-20 GB | ~62 GB |
+| **E2B** | 5.1B | 2.3B | 128K | 文本、图像、视频、**音频** | 4-5 GB | 10-15 GB |
+| **E4B** | 8B | 4.5B | 128K | 文本、图像、视频、**音频** | 5.5-6 GB | ~16 GB |
+| **26B-A4B (MoE)** | 26B | 3.8B 激活参数 | 256K | 文本、图像、视频 | 16-18 GB | ~52 GB |
+| **31B (Dense)** | 31B | 31B | 256K | 文本、图像、视频 | 17-20 GB | ~62 GB |
 
-**Key**: Only E2B and E4B support native audio input. The "E" stands for "effective" — Per-Layer Embeddings (PLE) make the compute cost much lower than the total parameter count.
+**关键点**：仅 E2B 和 E4B 支持原生音频输入。"E" 代表 "effective"（有效）——逐层嵌入（Per-Layer Embeddings, PLE）使计算成本远低于总参数量。
 
-## E4B Architecture
+## E4B 架构
 
-### Text Decoder
-- **Layers**: 42
-- **Hidden size**: 2560
-- **Intermediate (FFN) size**: 10,240
-- **Per-layer input hidden size**: 256 (PLE feature)
-- **Attention heads**: 8, KV heads: 2 (grouped-query attention)
-- **Head dimension**: 256 (sliding), 512 (global)
-- **Vocabulary size**: 262,144
-- **Context length**: 128K tokens
-- **Hybrid attention**: 5 sliding window (512 tokens) + 1 global, repeating 7 times
-- **KV sharing**: across 18 layers
+### 文本解码器
+- **层数**：42
+- **隐藏层大小**：2560
+- **中间层（FFN）大小**：10,240
+- **每层输入隐藏大小**：256（PLE 特性）
+- **注意力头数**：8，KV 头数：2（分组查询注意力）
+- **头维度**：256（滑动窗口），512（全局）
+- **词汇表大小**：262,144
+- **上下文长度**：128K tokens
+- **混合注意力**：5 层滑动窗口（512 tokens）+ 1 层全局，重复 7 次
+- **KV 共享**：跨 18 层
 
-### Vision Encoder (~150M params)
-- **Layers**: 16
-- **Hidden size**: 768
-- **Patch size**: 16
-- **Default output**: 280 tokens per image
-- **Configurable token budgets**: 70, 140, 280, 560, 1120
-  - 70: classification, fast video
-  - 140: quick understanding
-  - 280: general multimodal chat
-  - 560: complex UI reasoning
-  - 1120: OCR, documents, handwriting
+### 视觉编码器（约 150M 参数）
+- **层数**：16
+- **隐藏层大小**：768
+- **Patch 大小**：16
+- **默认输出**：每张图像 280 个 tokens
+- **可配置 token 预算**：70、140、280、560、1120
+  - 70：分类、快速视频处理
+  - 140：快速理解
+  - 280：通用多模态对话
+  - 560：复杂 UI 推理
+  - 1120：OCR、文档、手写识别
 
-### Audio Encoder (~300M params)
-- **Layers**: 12
-- **Hidden size**: 1,024
-- **Feature extractor**: 128 Mel-frequency bins, 16kHz sampling rate
-- **Processing**: 40ms per token, max 750 tokens = **30 seconds max**
-- **Activation**: SiLU
+### 音频编码器（约 300M 参数）
+- **层数**：12
+- **隐藏层大小**：1,024
+- **特征提取器**：128 个 Mel 频率 bin，16kHz 采样率
+- **处理速度**：每个 token 40ms，最多 750 个 tokens = **最长 30 秒**
+- **激活函数**：SiLU
 
-### Video Processing
-- Frames sampled: 32
-- Max 70 soft tokens per frame
-- Max duration: 60 seconds at 1 fps
+### 视频处理
+- 帧采样数：32
+- 每帧最多 70 个软 tokens
+- 最大时长：1 fps 下 60 秒
 
-## Special Tokens
+## 特殊 Tokens
 
-| Token | String | Purpose |
+| Token | 字符串 | 用途 |
 |-------|--------|---------|
-| Image | `<\|image\|>` | Image data placeholder |
-| Audio | `<\|audio\|>` | Audio data placeholder |
-| Video | `<\|video\|>` | Video data placeholder |
-| Think | `<\|think\|>` | Enable reasoning mode |
-| BOI/EOI | `<\|image>` / `<image\|>` | Image region markers |
-| BOA/EOA | `<\|audio>` / `<audio\|>` | Audio region markers |
-| Tool call | `<\|tool_call>` / `<tool_call\|>` | Function calling |
+| 图像 | `<\|image\|>` | 图像数据占位符 |
+| 音频 | `<\|audio\|>` | 音频数据占位符 |
+| 视频 | `<\|video\|>` | 视频数据占位符 |
+| 思考 | `<\|think\|>` | 启用推理模式 |
+| BOI/EOI | `<\|image>` / `<image\|>` | 图像区域标记 |
+| BOA/EOA | `<\|audio>` / `<audio\|>` | 音频区域标记 |
+| 工具调用 | `<\|tool_call>` / `<tool_call\|>` | 函数调用 |
 
-## Thinking/Reasoning Mode
+## 思考/推理模式
 
-- Enable by adding `<|think|>` at start of system prompt
-- Output format: `<|channel>thought\n[reasoning]<channel|>[answer]`
-- **Do NOT use in real-time demo** — too slow for conversational latency
+- 在系统提示词开头添加 `<|think|>` 以启用
+- 输出格式：`<|channel>thought\n[reasoning]<channel|>[answer]`
+- **请勿在实时演示中使用** —— 对话延迟太高
 
-## Inference Code (Transformers)
+## 推理代码（Transformers）
 
 ```python
 from transformers import AutoProcessor, AutoModelForMultimodalLM
@@ -77,7 +77,7 @@ from transformers import AutoProcessor, AutoModelForMultimodalLM
 processor = AutoProcessor.from_pretrained("google/gemma-4-E4B-it")
 model = AutoModelForMultimodalLM.from_pretrained("google/gemma-4-E4B-it", dtype="auto", device_map="auto")
 
-# Multimodal message format
+# 多模态消息格式
 messages = [
     {"role": "user", "content": [
         {"type": "image", "url": "https://example.com/photo.jpg"},
@@ -90,30 +90,30 @@ inputs = processor.apply_chat_template(messages, tokenize=True, return_dict=True
 outputs = model.generate(**inputs, max_new_tokens=512, temperature=1.0, top_p=0.95, top_k=64)
 ```
 
-## Recommended Sampling Parameters
-- Temperature: 1.0
-- Top-p: 0.95
-- Top-k: 64
+## 推荐采样参数
+- Temperature：1.0
+- Top-p：0.95
+- Top-k：64
 
-## Best Practices
-1. Place image/audio content BEFORE text in prompts
-2. Audio max: 30 seconds per chunk
-3. Video max: 60 seconds at 1 fps
-4. Use lower vision token budgets (70-140) for speed, higher (560+) for detail
-5. Do NOT enable thinking mode for real-time applications
+## 最佳实践
+1. 在提示词中将图像/音频内容放在文本之前
+2. 音频最大时长：每段 30 秒
+3. 视频最大时长：1 fps 下 60 秒
+4. 为追求速度使用较低的视觉 token 预算（70-140），为追求细节使用较高预算（560+）
+5. 实时应用中请勿启用思考模式
 
-## Benchmarks (E4B instruction-tuned)
+## 基准测试（E4B 指令微调版）
 
-| Benchmark | Score |
+| 基准测试 | 得分 |
 |-----------|-------|
 | MMLU Pro | 69.4% |
 | AIME 2026 | 42.5% |
 | LiveCodeBench v6 | 52.0% |
 | GPQA Diamond | 58.6% |
-| MMMU Pro (vision) | 52.6% |
+| MMMU Pro（视觉） | 52.6% |
 | MATH-Vision | 59.5% |
-| MMMLU (multilingual) | 76.6% |
+| MMMLU（多语言） | 76.6% |
 
-## Sources
+## 参考来源
 - https://huggingface.co/google/gemma-4-E4B
 - https://huggingface.co/google/gemma-4-E4B-it

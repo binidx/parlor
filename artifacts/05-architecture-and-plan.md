@@ -1,26 +1,26 @@
-# Architecture & Implementation Plan
+# 架构与实施计划
 
-## Target Hardware
-- **Apple M3 Pro, 18 GB unified memory**
+## 目标硬件
+- **Apple M3 Pro，18 GB 统一内存**
 - macOS
 
-## Chosen Stack
+## 技术栈选择
 
-| Component | Choice | Why |
+| 组件 | 选择 | 原因 |
 |-----------|--------|-----|
-| **LLM Inference** | LiteRT-LM C++ (Metal GPU) | Fastest, smallest model (3.65 GB), native audio+vision |
-| **Model** | Gemma 4 E4B-it (.litertlm) | Native multimodal: text + image + audio |
-| **TTS** | Kokoro-82M | <300ms, 82M params, excellent quality |
-| **Web Frontend** | HTML/JS + WebRTC or WebSocket | Camera + mic capture via getUserMedia |
-| **HTTP Server** | C++ with cpp-httplib (or similar) | Wraps LiteRT-LM engine, serves SSE/WebSocket |
+| **LLM 推理** | LiteRT-LM C++ (Metal GPU) | 最快、最小的模型（3.65 GB），原生支持音频+视觉 |
+| **模型** | Gemma 4 E4B-it (.litertlm) | 原生多模态：文本 + 图像 + 音频 |
+| **TTS** | Kokoro-82M | <300ms，82M 参数，质量出色 |
+| **Web 前端** | HTML/JS + WebRTC 或 WebSocket | 通过 getUserMedia 捕获摄像头和麦克风 |
+| **HTTP 服务器** | C++ + cpp-httplib（或类似库） | 封装 LiteRT-LM 引擎，提供 SSE/WebSocket 服务 |
 
-## Architecture Diagram
+## 架构图
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Browser                           │
+│                    浏览器                             │
 │                                                      │
-│  getUserMedia() → Webcam (1fps JPEG) + Mic (PCM)   │
+│  getUserMedia() → 摄像头 (1fps JPEG) + 麦克风 (PCM)  │
 │       │                                    │         │
 │       └──── WebSocket ─────────────────────┘         │
 │                    │                                  │
@@ -28,53 +28,53 @@
                      │
                      ▼
 ┌─────────────────────────────────────────────────────┐
-│              C++ Server (Metal GPU)                   │
+│              C++ 服务器 (Metal GPU)                   │
 │                                                      │
 │  ┌─────────────────────────────────────────────┐    │
-│  │        LiteRT-LM Engine                      │    │
+│  │        LiteRT-LM 引擎                        │    │
 │  │        Gemma 4 E4B (3.65 GB, Metal GPU)     │    │
 │  │                                              │    │
-│  │  Input:                                      │    │
-│  │   • Audio blob (WAV) — native, no STT needed │    │
-│  │   • Image blob (JPEG) — webcam frame         │    │
-│  │   • Text — conversation context              │    │
+│  │  输入：                                      │    │
+│  │   • 音频 blob (WAV) — 原生支持，无需 STT     │    │
+│  │   • 图像 blob (JPEG) — 摄像头帧              │    │
+│  │   • 文本 — 对话上下文                        │    │
 │  │                                              │    │
-│  │  Output:                                     │    │
-│  │   • Streaming text tokens                    │    │
+│  │  输出：                                      │    │
+│  │   • 流式文本 token                           │    │
 │  └──────────────┬──────────────────────────────┘    │
-│                  │ streamed text                      │
+│                  │ 流式文本                            │
 │                  ▼                                    │
 │  ┌─────────────────────────────────────────────┐    │
 │  │        Kokoro TTS (82M, ONNX)               │    │
-│  │        Sentence-level streaming              │    │
-│  │        Output: PCM audio chunks              │    │
+│  │        句子级流式处理                         │    │
+│  │        输出：PCM 音频分块                     │    │
 │  └──────────────┬──────────────────────────────┘    │
 │                  │                                    │
 └──────────────────┼────────────────────────────────────┘
-                   │ audio (WebSocket binary frames)
+                   │ 音频（WebSocket 二进制帧）
                    ▼
-              Browser Speaker (Web Audio API)
+              浏览器扬声器（Web Audio API）
 ```
 
-## Memory Budget (M3 Pro 18 GB)
+## 内存预算（M3 Pro 18 GB）
 
-| Component | Estimated Memory |
+| 组件 | 预估内存 |
 |-----------|-----------------|
-| Gemma 4 E4B (.litertlm, Metal) | ~3.65 GB model + ~1.5 GB GPU working | 
+| Gemma 4 E4B (.litertlm, Metal) | ~3.65 GB 模型 + ~1.5 GB GPU 工作内存 | 
 | Kokoro TTS (ONNX) | ~200 MB |
-| C++ server + buffers | ~200 MB |
-| Browser + OS | ~4 GB |
-| **Total** | **~9.5 GB** |
-| **Headroom** | **~8.5 GB** |
+| C++ 服务器 + 缓冲区 | ~200 MB |
+| 浏览器 + 操作系统 | ~4 GB |
+| **总计** | **~9.5 GB** |
+| **剩余空间** | **~8.5 GB** |
 
-## Data Flow
+## 数据流
 
-### User speaks + shows camera → AI responds with voice
+### 用户说话 + 展示摄像头 → AI 语音回复
 
-1. **Browser** captures webcam frame (JPEG, ~50-100 KB) at 1 fps
-2. **Browser** captures microphone audio, detects silence (VAD in JS or server-side)
-3. On user turn end: sends audio chunk (WAV, ~30s max) + latest frame via WebSocket
-4. **C++ Server** receives both, constructs multimodal message:
+1. **浏览器**以 1 fps 捕获摄像头帧（JPEG，~50-100 KB）
+2. **浏览器**捕获麦克风音频，检测静音（JS 或服务端 VAD）
+3. 用户轮次结束时：通过 WebSocket 发送音频分块（WAV，最长 ~30s）+ 最新帧
+4. **C++ 服务器**接收两者，构造多模态消息：
    ```json
    {
      "role": "user",
@@ -85,103 +85,103 @@
      ]
    }
    ```
-5. **LiteRT-LM** processes with Gemma 4 E4B (Metal GPU), streams tokens
-6. **Kokoro TTS** converts first complete sentence to audio while LLM continues
-7. **Server** sends audio chunks back via WebSocket
-8. **Browser** plays audio via Web Audio API
+5. **LiteRT-LM** 使用 Gemma 4 E4B（Metal GPU）处理，流式输出 token
+6. **Kokoro TTS** 在 LLM 继续生成的同时，将第一个完整句子转换为音频
+7. **服务器**通过 WebSocket 发送音频分块
+8. **浏览器**通过 Web Audio API 播放音频
 
-## Measured Benchmarks (M3 Pro 18GB, Metal GPU)
+## 实测基准（M3 Pro 18GB, Metal GPU）
 
-Tested with `litert_lm_main`, Gemma 4 E4B (3.4 GB), Metal native backend:
+使用 `litert_lm_main` 测试，Gemma 4 E4B（3.4 GB），Metal 原生后端：
 
-| Metric | Value |
+| 指标 | 数值 |
 |--------|-------|
 | **TTFT** | **0.38s** |
 | **Prefill** | **61.3 tok/s** |
 | **Decode** | **26.5 tok/s** |
-| Init time | ~5.9s (one-time) |
-| 140 token output | 5.3s total |
+| 初始化时间 | ~5.9s（一次性） |
+| 140 token 输出 | 总计 5.3s |
 
-**IMPORTANT**: Must symlink `libLiteRtMetalAccelerator.dylib` → `libLiteRtGpuAccelerator.dylib` for native Metal. Without it, falls back to WebGPU (19 tok/s, 1.18s TTFT).
+**重要提示**：必须创建符号链接 `libLiteRtMetalAccelerator.dylib` → `libLiteRtGpuAccelerator.dylib` 以启用原生 Metal。否则会回退到 WebGPU（19 tok/s，1.18s TTFT）。
 
-## Latency Targets (Revised with Real Data)
+## 延迟目标（基于实测数据修订）
 
-| Stage | Target | Notes |
+| 阶段 | 目标 | 备注 |
 |-------|--------|-------|
-| Audio capture + VAD | ~200ms after speech ends | Silero VAD or browser-side |
-| WebSocket round-trip | <10ms | localhost |
-| LiteRT-LM TTFT (GPU) | **~380ms** | Measured on M3 Pro Metal |
-| LiteRT-LM decode | **~26.5 tok/s** | Measured on M3 Pro Metal |
-| First sentence complete | ~1s | ~26 tokens at 26.5 tok/s |
-| Kokoro TTS first audio | <300ms | From first complete sentence |
-| **Total perceived latency** | **~1.5-2s** | From user stops speaking to AI voice starts |
+| 音频采集 + VAD | 语音结束后 ~200ms | Silero VAD 或浏览器端 |
+| WebSocket 往返 | <10ms | localhost |
+| LiteRT-LM TTFT (GPU) | **~380ms** | M3 Pro Metal 实测 |
+| LiteRT-LM decode | **~26.5 tok/s** | M3 Pro Metal 实测 |
+| 第一个句子完成 | ~1s | ~26 tokens，26.5 tok/s |
+| Kokoro TTS 首段音频 | <300ms | 从第一个完整句子开始 |
+| **总感知延迟** | **~1.5-2s** | 从用户停止说话到 AI 语音开始 |
 
-## Implementation Phases
+## 实施阶段
 
-### Phase 1: Verify LiteRT-LM Build & GPU Inference
-1. Clone LiteRT-LM to ~/workspace
-2. Build with Bazel on macOS
-3. Download Gemma 4 E4B model
-4. Verify text generation with GPU backend
-5. Test multimodal (image + text) inference
-6. Test audio input
+### 阶段一：验证 LiteRT-LM 构建与 GPU 推理
+1. 克隆 LiteRT-LM 到 ~/workspace
+2. 在 macOS 上使用 Bazel 构建
+3. 下载 Gemma 4 E4B 模型
+4. 验证 GPU 后端的文本生成
+5. 测试多模态（图像 + 文本）推理
+6. 测试音频输入
 
-### Phase 2: C++ HTTP/WebSocket Server
-1. Add cpp-httplib or similar lightweight HTTP library
-2. Implement WebSocket endpoint for streaming
-3. Accept multimodal input (audio blob + image blob)
-4. Stream LLM tokens back as SSE or WebSocket messages
-5. Integrate Kokoro TTS (via ONNX C++ runtime or subprocess)
+### 阶段二：C++ HTTP/WebSocket 服务器
+1. 添加 cpp-httplib 或类似轻量级 HTTP 库
+2. 实现 WebSocket 端点用于流式传输
+3. 接受多模态输入（音频 blob + 图像 blob）
+4. 以 SSE 或 WebSocket 消息流式返回 LLM token
+5. 集成 Kokoro TTS（通过 ONNX C++ 运行时或子进程）
 
-### Phase 3: Web Frontend
-1. HTML/JS page with getUserMedia for webcam + mic
-2. WebSocket connection to C++ server
-3. Client-side VAD (Silero WASM or simple energy-based)
-4. Frame sampling at 1 fps
-5. Web Audio API for playing TTS audio
-6. Simple chat UI showing conversation
+### 阶段三：Web 前端
+1. HTML/JS 页面，使用 getUserMedia 捕获摄像头和麦克风
+2. 与 C++ 服务器的 WebSocket 连接
+3. 客户端 VAD（Silero WASM 或简单能量检测）
+4. 以 1 fps 采样帧
+5. Web Audio API 播放 TTS 音频
+6. 简单的聊天 UI 显示对话
 
-### Phase 4: Polish & Optimize
-1. Tune vision token budget (start with 70 for speed)
-2. Optimize audio chunk size for latency
-3. Add conversation history management
-4. Handle interruption (cancel generation when user starts speaking)
-5. Add system prompt tuning for natural conversation
+### 阶段四：完善与优化
+1. 调整视觉 token 预算（为速度从 70 开始）
+2. 优化音频分块大小以降低延迟
+3. 添加对话历史管理
+4. 处理中断（用户开始说话时取消生成）
+5. 添加系统提示词调优以实现自然对话
 
-## Open Questions / Risks
+## 待解决问题 / 风险
 
-1. **Bazel build on macOS** — may have dependency issues, need to verify
-2. **LiteRT-LM Gemma 4 E4B model availability** — confirm .litertlm file exists for E4B (not just E2B)
-3. **Audio quality via native input** — Gemma 4's audio encoder quality vs dedicated Whisper STT
-4. **Kokoro TTS C++ integration** — may need Python subprocess or ONNX C++ runtime
-5. **M3 Pro GPU performance** — no published benchmarks, need to measure
-6. **WebSocket library in C++** — cpp-httplib doesn't support WebSocket natively; may need uWebSockets, Boost.Beast, or similar
+1. **macOS 上的 Bazel 构建** — 可能存在依赖问题，需要验证
+2. **LiteRT-LM Gemma 4 E4B 模型可用性** — 确认 E4B 的 .litertlm 文件存在（不仅仅是 E2B）
+3. **原生输入的音频质量** — Gemma 4 的音频编码器质量 vs 专用 Whisper STT
+4. **Kokoro TTS C++ 集成** — 可能需要 Python 子进程或 ONNX C++ 运行时
+5. **M3 Pro GPU 性能** — 没有公开基准，需要实测
+6. **C++ 中的 WebSocket 库** — cpp-httplib 不原生支持 WebSocket；可能需要 uWebSockets、Boost.Beast 或类似库
 
-## Alternative: Hybrid Python + C++ Approach
+## 备选方案：Python + C++ 混合架构
 
-If pure C++ is too complex for the server layer:
+如果纯 C++ 对服务器层来说过于复杂：
 
 ```
-Browser ←→ Python FastAPI (WebSocket, Kokoro TTS)
+浏览器 ←→ Python FastAPI (WebSocket, Kokoro TTS)
                 ↕
-           C++ LiteRT-LM Engine (Metal GPU)
-           via: subprocess CLI | shared memory | Unix socket
+           C++ LiteRT-LM 引擎 (Metal GPU)
+           通过：subprocess CLI | 共享内存 | Unix socket
 ```
 
-This lets us use Python for the "glue" (WebSocket, TTS, audio encoding) while keeping the hot path (LLM inference) in C++ with Metal GPU. The `litert_lm_main` CLI already supports streaming output.
+这样可以用 Python 处理"胶水"层（WebSocket、TTS、音频编码），同时将热路径（LLM 推理）保留在 C++ 中使用 Metal GPU。`litert_lm_main` CLI 已支持流式输出。
 
-## Files to Create
+## 需要创建的文件
 
 ```
 gemma-4/
-├── 01-gemma4-model-overview.md      # Model documentation
-├── 02-litert-lm-guide.md            # LiteRT-LM reference
-├── 03-open-source-references.md     # Related projects
-├── 04-tts-options.md                # TTS comparison
-├── 05-architecture-and-plan.md      # This file
-├── 06-unsloth-and-alternatives.md   # Unsloth/Ollama/MLX info
-└── src/                             # Demo source code (TBD)
-    ├── server/                      # C++ server wrapping LiteRT-LM
-    ├── frontend/                    # HTML/JS web UI
-    └── tts/                         # Kokoro TTS integration
+├── 01-gemma4-model-overview.md      # 模型文档
+├── 02-litert-lm-guide.md            # LiteRT-LM 参考
+├── 03-open-source-references.md     # 相关项目
+├── 04-tts-options.md                # TTS 对比
+├── 05-architecture-and-plan.md      # 本文件
+├── 06-unsloth-and-alternatives.md   # Unsloth/Ollama/MLX 信息
+└── src/                             # 演示源代码（待定）
+    ├── server/                      # C++ 服务器封装 LiteRT-LM
+    ├── frontend/                    # HTML/JS Web UI
+    └── tts/                         # Kokoro TTS 集成
 ```

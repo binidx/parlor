@@ -1,147 +1,141 @@
-# Benchmarks — Apple M3 Pro 18GB
+# 基准测试 — Apple M3 Pro 18GB
 
-All benchmarks run on LiteRT-LM v0.10.1, Gemma 4 E2B (2.3B effective, 2.58 GB model).
+所有基准测试均在 LiteRT-LM v0.10.1、Gemma 4 E2B（2.3B 有效参数，2.58 GB 模型）上运行。
 
-## Python API — GPU (WebGPU) Setup
+## Python API — GPU (WebGPU) 配置
 
-As of litert-lm v0.10.1, `Backend.GPU` works in Python despite docs saying "upcoming".
-The pip package ships a WebGPU accelerator that uses Metal under the hood on macOS.
-Audio backend is model-constrained to CPU only (`INVALID_ARGUMENT` if set to GPU).
+截至 litert-lm v0.10.1，`Backend.GPU` 在 Python 中可用，尽管文档标注为"即将推出"。
+pip 包内置了 WebGPU 加速器，在 macOS 底层使用 Metal。
+音频后端受模型限制只能使用 CPU（设置为 GPU 会报 `INVALID_ARGUMENT`）。
 
 ```python
 engine = litert_lm.Engine(
     MODEL_PATH,
     backend=litert_lm.Backend.GPU,
     vision_backend=litert_lm.Backend.GPU,
-    audio_backend=litert_lm.Backend.CPU,  # model requires CPU
+    audio_backend=litert_lm.Backend.CPU,  # 模型要求 CPU
 )
 ```
 
-**How to verify GPU is active:** check stderr for `RegisterAccelerator: name=GPU WebGPU`.
+**如何验证 GPU 是否启用：** 检查 stderr 输出 `RegisterAccelerator: name=GPU WebGPU`。
 
-**Known warning (non-fatal):** `Could not load symbol LiteRtTopKWebGpuSampler_UpdateConfig` —
-falls back to CPU sampling, GPU compute still active. Does not affect performance.
+**已知警告（非致命）：** `Could not load symbol LiteRtTopKWebGpuSampler_UpdateConfig` —
+回退到 CPU 采样，GPU 计算仍然生效。不影响性能。
 
-## Synthetic Benchmarks (1024 prefill, 256 decode)
+## 合成基准测试（1024 prefill, 256 decode）
 
-Same methodology as official HuggingFace benchmarks. Text-only, no multimodal encoders.
-Run via `litert_lm.Benchmark()` Python API.
+方法论与 HuggingFace 官方基准测试相同。纯文本，无多模态编码器。
+通过 `litert_lm.Benchmark()` Python API 运行。
 
 ### GPU (WebGPU/Metal) vs CPU
 
-| Metric | GPU (cached) | GPU (first run) | CPU | GPU vs CPU |
-|--------|-------------|-----------------|-----|------------|
+| 指标 | GPU（缓存后） | GPU（首次运行） | CPU | GPU vs CPU |
+|------|-------------|----------------|-----|------------|
 | **Prefill** | **2,662 tok/s** | 431 tok/s | 215 tok/s | **12.4x** |
 | **Decode** | **83 tok/s** | 70 tok/s | 19 tok/s | **4.4x** |
 | **TTFT** | **0.40s** | 2.39s | 4.82s | **12.1x** |
-| Init time | ~0.8s | ~2.1s | ~0.8s | - |
+| 初始化时间 | ~0.8s | ~2.1s | ~0.8s | - |
 
-**First-run shader penalty:** WebGPU compiles Metal shaders on first inference after process
-start (~2.4s TTFT). Subsequent runs use cached shaders (~0.4s TTFT). The server does a warmup
-`send_message("Hi")` at startup to pre-compile shaders.
+**首次着色器编译惩罚：** WebGPU 在进程启动后首次推理时编译 Metal 着色器（~2.4s TTFT）。后续运行使用缓存的着色器（~0.4s TTFT）。服务器在启动时执行预热 `send_message("Hi")` 以预编译着色器。
 
-### Comparison with official HuggingFace benchmarks
+### 与 HuggingFace 官方基准测试对比
 
-| Platform | Prefill (tok/s) | Decode (tok/s) | TTFT |
-|----------|-----------------|----------------|------|
-| **M3 Pro (ours, WebGPU)** | **2,662** | **83** | **0.40s** |
-| M4 Max (official) | 7,835 | 160 | 0.1s |
-| iPhone 17 Pro (official) | 2,878 | 56.5 | 0.3s |
-| S26 Ultra (official) | 3,808 | 52.1 | 0.3s |
-| RTX 4090 (official) | 11,234 | 143 | 0.1s |
+| 平台 | Prefill (tok/s) | Decode (tok/s) | TTFT |
+|------|-----------------|----------------|------|
+| **M3 Pro（我们的，WebGPU）** | **2,662** | **83** | **0.40s** |
+| M4 Max（官方） | 7,835 | 160 | 0.1s |
+| iPhone 17 Pro（官方） | 2,878 | 56.5 | 0.3s |
+| S26 Ultra（官方） | 3,808 | 52.1 | 0.3s |
+| RTX 4090（官方） | 11,234 | 143 | 0.1s |
 
-Our M3 Pro is in line with expectations — comparable to iPhone 17 Pro for prefill,
-faster decode (83 vs 56.5) due to higher memory bandwidth.
+我们的 M3 Pro 符合预期 — prefill 与 iPhone 17 Pro 相当，
+decode 更快（83 vs 56.5），得益于更高的内存带宽。
 
-## Native Metal vs WebGPU (Python)
+## 原生 Metal vs WebGPU（Python）
 
-The pip package only ships `libLiteRtWebGpuAccelerator.dylib`. The C++ build includes
-native Metal (`libLiteRtMetalAccelerator.dylib`) which shows ~6x faster prefill in the
-C++ binary. However:
+pip 包仅包含 `libLiteRtWebGpuAccelerator.dylib`。C++ 构建包含
+原生 Metal（`libLiteRtMetalAccelerator.dylib`），在 C++ 二进制文件中 prefill 快约 6 倍。然而：
 
-- **Native Metal crashes (SIGSEGV) in Python** — the prebuilt Metal lib has ABI
-  incompatibilities with the pip-installed Python nanobind bindings.
-- **DYLD_LIBRARY_PATH doesn't work** — macOS dyld reads it at process start, and
-  litert_lm uses dlopen relative to its package directory, not the env var.
-- **WebGPU with cached shaders matches Metal performance** — once shaders are compiled,
-  WebGPU prefill (2,662 tok/s) is comparable to native Metal. The gap only shows on first run.
+- **原生 Metal 在 Python 中崩溃（SIGSEGV）** — 预编译的 Metal 库与 pip 安装的 Python nanobind 绑定存在 ABI 不兼容问题。
+- **DYLD_LIBRARY_PATH 无效** — macOS dyld 在进程启动时读取该变量，而 litert_lm 使用相对于其包目录的 dlopen，而非环境变量。
+- **带缓存着色器的 WebGPU 性能与原生 Metal 相当** — 着色器编译完成后，WebGPU prefill（2,662 tok/s）与原生 Metal 相当。差距仅体现在首次运行。
 
-**Conclusion:** stick with WebGPU from pip. No benefit to native Metal for Python users.
+**结论：** 继续使用 pip 包中的 WebGPU。对 Python 用户而言原生 Metal 没有优势。
 
-## Multimodal Encoder Costs (Real-World)
+## 多模态编码器开销（实际场景）
 
-These are measured by isolating each modality and subtracting text-only baseline.
-The encoders run their own forward passes BEFORE token prefill begins.
+通过隔离每种模态并减去纯文本基线来测量。
+编码器在 token prefill 开始之前运行各自的前向传播。
 
-| Component | Time | Notes |
-|-----------|------|-------|
-| **Image encoder (SigLIP, GPU)** | **~0.86s** | Biggest single cost. 320px input upscaled to ~912x672, produces ~268 tokens (default budget 280). Resolution doesn't matter — always fills budget. |
-| **Audio encoder (Conformer, CPU)** | **~0.1-0.4s** | 305M param conformer. ~25 tokens/sec of audio, capped at 750 tokens (30s). Forced to CPU by model constraint. |
-| **Tool grammar overhead** | **~0.45s** | Constrained decoding setup for tool call parsing. Paid on EVERY `send_message`, not just the first. Internal to LiteRT-LM. |
-| **Text prefill (GPU)** | **~0.08s** | For ~300 tokens (system + prompt). Fast. |
+| 组件 | 时间 | 备注 |
+|------|------|------|
+| **图像编码器（SigLIP，GPU）** | **~0.86s** | 最大的单项开销。320px 输入上采样到 ~912x672，产生 ~268 tokens（默认预算 280）。分辨率无关 — 始终填满预算。 |
+| **音频编码器（Conformer，CPU）** | **~0.1-0.4s** | 3.05 亿参数 conformer。~25 tokens/秒音频，上限 750 tokens（30s）。受模型约束强制使用 CPU。 |
+| **工具语法开销** | **~0.45s** | 工具调用解析的受限解码设置。每次 `send_message` 都会支付，不仅是首次。LiteRT-LM 内部行为。 |
+| **文本 prefill（GPU）** | **~0.08s** | ~300 tokens（系统提示词 + 用户提示词）。很快。 |
 
-### Gemma 4 Input Token Counts
+### Gemma 4 输入 Token 计数
 
-Tokenizer: SentencePiece, 262,144 vocab. Extracted from `.litertlm` bundle at offset 32768.
+分词器：SentencePiece，262,144 词表。从 `.litertlm` 包的偏移量 32768 处提取。
 
-**Image tokens:** Configurable budget (70/140/280/560/1120). Default is **280**.
-For a 320x240 JPEG at default budget: upscaled to 912x672 → **266 soft tokens + 2 special = 268 total**.
-Input resolution doesn't matter — image is always rescaled to fill the budget.
+**图像 tokens：** 可配置预算（70/140/280/560/1120）。默认为 **280**。
+对于 320x240 JPEG 在默认预算下：上采样到 912x672 → **266 软 tokens + 2 特殊 = 总计 268**。
+输入分辨率无关 — 图像始终缩放以填满预算。
 
-**Audio tokens:** ~**25 tokens per second** of audio (40ms per token), capped at 750 tokens (30s).
+**音频 tokens：** ~**每秒 25 tokens**（每 token 40ms），上限 750 tokens（30s）。
 - 1s → ~25 tokens
 - 2s → ~50 tokens
 - 5s → ~125 tokens
 
-**Text:** System prompt ~51 tokens, tool definition ~177 tokens, user prompt ~30 tokens.
+**文本：** 系统提示词 ~51 tokens，工具定义 ~177 tokens，用户提示词 ~30 tokens。
 
-## Real-World Pipeline Latency (GPU, E2B)
+## 实际场景管线延迟（GPU，E2B）
 
-Measured via `bench.py` against running server over WebSocket. Image + Audio every turn.
+通过 `bench.py` 对运行中的服务器进行 WebSocket 测量。每轮含图像 + 音频。
 
-### Per-Turn Breakdown
+### 每轮分解
 
-| Stage | Time |
-|-------|------|
-| Image encoder (SigLIP) | ~0.86s |
-| Tool constrained decoding overhead | ~0.45s |
-| Audio encoder (2-5s clip, CPU) | ~0.1-0.4s |
-| Text + history prefill | ~0.1-0.4s |
-| **Total TTFT / prefill** | **~1.8-2.2s** |
-| Decode (~25 tokens at 80 tok/s) | ~0.3s |
-| **Total LLM** | **~2.1-2.5s** |
-| TTS (Kokoro MLX, 1-3 sentences) | ~0.3-0.7s |
-| **Total end-to-end** | **~2.5-3.0s** |
+| 阶段 | 时间 |
+|------|------|
+| 图像编码器（SigLIP） | ~0.86s |
+| 工具受限解码开销 | ~0.45s |
+| 音频编码器（2-5s 音频，CPU） | ~0.1-0.4s |
+| 文本 + 历史记录 prefill | ~0.1-0.4s |
+| **总计 TTFT / prefill** | **~1.8-2.2s** |
+| Decode（~25 tokens，80 tok/s） | ~0.3s |
+| **总计 LLM** | **~2.1-2.5s** |
+| TTS（Kokoro MLX，1-3 句） | ~0.3-0.7s |
+| **总计端到端** | **~2.5-3.0s** |
 
-### Multi-Turn Context Growth
+### 多轮对话上下文增长
 
-From bench.py (same WebSocket connection, image + audio every turn):
+来自 bench.py（同一 WebSocket 连接，每轮含图像 + 音频）：
 
-| Turn | LLM Time | Notes |
-|------|----------|-------|
-| Turn 1 | ~1.8s | Fresh conversation |
-| Turn 2 | ~2.2s | +prior turn context |
-| Turn 3 | ~2.5s | Context growing |
-| Turn 4 | ~2.2s | |
-| Turn 5 | ~2.2s | |
+| 轮次 | LLM 时间 | 备注 |
+|------|----------|------|
+| 第 1 轮 | ~1.8s | 新对话 |
+| 第 2 轮 | ~2.2s | +前轮上下文 |
+| 第 3 轮 | ~2.5s | 上下文增长 |
+| 第 4 轮 | ~2.2s | |
+| 第 5 轮 | ~2.2s | |
 
-TTFT grows ~0.1-0.2s per turn as conversation history accumulates.
+随着对话历史累积，TTFT 每轮增长约 0.1-0.2s。
 
-## Bottleneck Summary
+## 瓶颈总结
 
-| Bottleneck | Cost per turn | Fixable? |
-|------------|---------------|----------|
-| **Image encoder (SigLIP)** | 0.86s | Maybe — reduce image budget from 280→70 (~0.2s), but not configurable in Python API |
-| **Tool grammar** | 0.45s | No — internal to LiteRT-LM constrained decoding |
-| **Audio encoder (CPU)** | 0.1-0.4s | No — model constraint forces CPU |
-| **Context growth** | 0.1-0.2s/turn | Could limit conversation history length |
-| **Decode** | ~0.3s | Already near hardware limit (80 tok/s) |
-| **TTS** | 0.3-0.7s | Already on GPU (MLX) |
+| 瓶颈 | 每轮开销 | 可修复？ |
+|------|----------|----------|
+| **图像编码器（SigLIP）** | 0.86s | 也许 — 将图像预算从 280 降到 70（~0.2s），但 Python API 中不可配置 |
+| **工具语法** | 0.45s | 否 — LiteRT-LM 受限解码的内部行为 |
+| **音频编码器（CPU）** | 0.1-0.4s | 否 — 模型约束强制使用 CPU |
+| **上下文增长** | 0.1-0.2s/轮 | 可以限制对话历史长度 |
+| **Decode** | ~0.3s | 已接近硬件极限（80 tok/s） |
+| **TTS** | 0.3-0.7s | 已在 GPU 上运行（MLX） |
 
-## Benchmarking
+## 基准测试命令
 
 ```bash
-# Synthetic text-only benchmark (Python API)
+# 合成纯文本基准测试（Python API）
 python3 -c "
 import litert_lm, os
 bench = litert_lm.Benchmark(
@@ -153,7 +147,7 @@ print(f'Decode: {r.last_decode_tokens_per_second:.0f} tok/s')
 print(f'TTFT: {r.time_to_first_token_in_second:.3f}s')
 "
 
-# End-to-end benchmark against running server
-# Start server: uv run python server.py
-# Then: uv run python bench.py
+# 对运行中服务器的端到端基准测试
+# 启动服务器：uv run python server.py
+# 然后：uv run python bench.py
 ```
